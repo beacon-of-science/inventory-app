@@ -113,4 +113,3 @@ localStorage 键为 `inventory-mvp`，内容包含版本 1 的商品与流水。
 - [Vant 4](https://vant-ui.github.io/vant/)
 - [Capacitor 环境要求](https://capacitorjs.com/docs/getting-started/environment-setup)
 - [Capacitor 开发与构建流程](https://capacitorjs.com/docs/basics/workflow)
-

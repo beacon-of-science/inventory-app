@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.gradle-home/
+.build-tmp/
+android/.gradle/
+android/local.properties
+android/**/build/
+android/app/src/main/assets/public/
+*.apk
+*.jks
+*.keystore
+.DS_Store

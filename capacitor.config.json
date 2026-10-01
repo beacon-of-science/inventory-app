@@ -1,0 +1,6 @@
+{
+  "appId": "com.inventory.localapp",
+  "appName": "简库存",
+  "webDir": "dist",
+  "android": { "backgroundColor": "#f4f7f8" }
+}
