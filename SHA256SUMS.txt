@@ -1,3 +1,1 @@
 f2578fbf501ff598d69041fef905f26cda235bb9c81760e82bea8b2b2b0052ee  inventory-app-debug.apk
-b441fdcc532b4d2ca84209b3d288f9991c1bd51a6fee0a75312eeaeeb7c37c03  inventory-app-source.zip
-4cfef26b6b13e4263e95dc5d9d7c159f7d00415420bb0683d5823d4a62bd50ed  inventory-app-web.zip

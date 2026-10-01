@@ -2,6 +2,12 @@
 
 一个使用 **Vue 3 + JavaScript + Vant + Capacitor** 开发的本地库存 App。首次打开为空数据，可以从新增商品开始使用。所有页面及资源随 APK 打包，业务不依赖服务器。
 
+## 手机安装包
+
+[下载 Android APK](https://github.com/beacon-of-science/inventory-app/releases/download/v0.1.0/inventory-app-debug.apk) · [Releases 发布页](https://github.com/beacon-of-science/inventory-app/releases/tag/v0.1.0)
+
+这是 Debug 测试版，支持 Android 7.0 及以上。手机安装与使用不需要安装 Node.js；下面的 Node.js 步骤仅用于修改源码和重新打包。
+
 ## 已实现
 
 - 商品新增、详情查看、编辑、删除；按名称或编号搜索。
@@ -99,7 +105,7 @@ android/                    Android Studio / Gradle 工程
 capacitor.config.json       应用标识与网页构建目录
 ```
 
-架构与代理分工见 [ARCHITECTURE.md](ARCHITECTURE.md)，交付核验见 [VERIFICATION.md](VERIFICATION.md)。
+已通过 92 项自动化测试、生产网页构建与 Android Debug 构建；APK 签名、对齐和包信息检查通过。浏览器已验证商品管理、出入库、库存不足保护和刷新后数据保留。尚未完成 Android 真机安装验证。
 
 ## 本地数据说明
 
