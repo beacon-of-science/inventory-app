@@ -1,6 +1,6 @@
 {
   "name": "inventory-app",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "简库存：离线 Android 库存管理 MVP",
@@ -13,7 +13,9 @@
     "android:open": "cap open android",
     "android:debug": "npm run android:sync && node scripts/build-android.mjs"
   },
-  "engines": { "node": ">=22.12.0" },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "dependencies": {
     "@capacitor/android": "8.5.2",
     "@capacitor/core": "8.5.2",

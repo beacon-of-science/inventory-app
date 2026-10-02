@@ -27,11 +27,50 @@ function productFields(input, previous) {
       fallback: previous?.name,
     }),
     sku: textField(input.sku, 'SKU', 40, { fallback: previous?.sku ?? '' }),
+    barcode: normalizeBarcode(input.barcode === undefined ? previous?.barcode ?? '' : input.barcode),
     unit: textField(input.unit, '单位', 12, {
       required: true,
       fallback: previous?.unit ?? '件',
     }),
     note: textField(input.note, '备注', 300, { fallback: previous?.note ?? '' }),
+  }
+}
+
+/** Optional 1D code text. Never coerce to a number: leading zeroes are significant. */
+export function normalizeBarcode(value) {
+  if (typeof value !== 'string') throw new Error('商品条码格式不正确')
+  // Inspect before trimming so control characters cannot hide at either end.
+  if (!/^[\x20-\x7e]*$/.test(value)) throw new Error('商品条码只能包含可打印的 ASCII 字符')
+  const result = value.trim()
+  if (result.length > 80) throw new Error('商品条码不能超过80个字符')
+  return result
+}
+
+/** Exact lookup only; scanning does not record a movement or change stock. */
+export function findProductByBarcode(state, value) {
+  const barcode = normalizeBarcode(value)
+  if (!barcode) return null
+  return state.products.find((product) => product.barcode === barcode) ?? null
+}
+
+/** UPC-A may be decoded as EAN-13 with a leading zero. Stored codes stay unchanged. */
+export function findProductByScan(state, result) {
+  const barcode = normalizeBarcode(result?.barcode)
+  if (!barcode) return null
+  const candidates = new Set([barcode])
+  if (result.format === 'UPC_A' && /^[0-9]{12}$/.test(barcode)) {
+    candidates.add(`0${barcode}`)
+  } else if (result.format === 'EAN_13' && /^0[0-9]{12}$/.test(barcode)) {
+    candidates.add(barcode.slice(1))
+  }
+  const matches = state.products.filter((product) => candidates.has(product.barcode))
+  if (matches.length > 1) throw new Error('该条码对应多个商品，请检查 UPC-A 与 EAN-13 条码绑定后重试')
+  return matches[0] ?? null
+}
+
+function uniqueBarcode(products, barcode, exceptId) {
+  if (barcode && products.some((product) => product.id !== exceptId && product.barcode === barcode)) {
+    throw new Error('商品条码已存在，请使用其他条码')
   }
 }
 
@@ -71,6 +110,7 @@ function quantityValue(value) {
 export function addProduct(state, input, meta) {
   const fields = productFields(input)
   uniqueSku(state.products, fields.sku)
+  uniqueBarcode(state.products, fields.barcode)
   const { id, now } = metadata(meta)
   if (state.products.some((product) => product.id === id)) throw new Error('商品标识已存在')
   const product = { id, ...fields, stock: 0, createdAt: now, updatedAt: now }
@@ -82,6 +122,7 @@ export function updateProduct(state, id, input, meta) {
   const previous = requireProduct(state, id)
   const fields = productFields(input, previous)
   uniqueSku(state.products, fields.sku, id)
+  uniqueBarcode(state.products, fields.barcode, id)
   const { now } = metadata(meta)
   const product = { ...previous, ...fields, updatedAt: now }
   return {

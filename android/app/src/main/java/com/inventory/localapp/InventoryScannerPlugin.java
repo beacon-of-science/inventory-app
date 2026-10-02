@@ -1,0 +1,118 @@
+package com.inventory.localapp;
+
+import android.Manifest;
+import android.app.Activity;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import androidx.activity.result.ActivityResult;
+import com.getcapacitor.JSObject;
+import com.getcapacitor.PermissionState;
+import com.getcapacitor.Plugin;
+import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.ActivityCallback;
+import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+@CapacitorPlugin(name = "InventoryScanner", permissions = {
+    @Permission(alias = "camera", strings = { Manifest.permission.CAMERA })
+})
+public class InventoryScannerPlugin extends Plugin {
+    private final AtomicBoolean scanning = new AtomicBoolean(false);
+    private PluginCall pendingCall;
+
+    @PluginMethod
+    public void scan(PluginCall call) {
+        if (!scanning.compareAndSet(false, true)) {
+            call.reject("扫码正在进行，请先完成或取消当前扫码", "SCAN_BUSY");
+            return;
+        }
+        pendingCall = call;
+        if (!getContext().getPackageManager().hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)) {
+            fail(call, "此设备没有可用摄像头，请手动输入商品条码", "NO_CAMERA");
+            return;
+        }
+        try {
+            if (getPermissionState("camera") != PermissionState.GRANTED) {
+                requestPermissionForAlias("camera", call, "cameraPermissionResult");
+            } else {
+                launchScanner(call);
+            }
+        } catch (Exception exception) {
+            fail(call, "无法启动扫码，请重试或手动输入商品条码", "SCAN_FAILED");
+        }
+    }
+
+    @PermissionCallback
+    private void cameraPermissionResult(PluginCall call) {
+        if (call == null) {
+            scanning.set(false);
+            pendingCall = null;
+            return;
+        }
+        if (getPermissionState("camera") != PermissionState.GRANTED) {
+            fail(call, "未获得相机权限。请在系统设置中允许相机权限，或手动输入商品条码", "CAMERA_DENIED");
+            return;
+        }
+        launchScanner(call);
+    }
+
+    private void launchScanner(PluginCall call) {
+        if (getActivity() == null || getActivity().isFinishing() || getActivity().isDestroyed()) {
+            fail(call, "扫码已中断，请重新打开扫码", "SCAN_INTERRUPTED");
+            return;
+        }
+        getActivity().runOnUiThread(() -> {
+            try {
+                if (pendingCall != call || !scanning.get()) return;
+                startActivityForResult(call, new Intent(getContext(), BarcodeScannerActivity.class), "scanResult");
+            } catch (Exception exception) {
+                fail(call, "无法打开扫码页面，请重试或手动输入商品条码", "SCAN_FAILED");
+            }
+        });
+    }
+
+    @ActivityCallback
+    private void scanResult(PluginCall call, ActivityResult activityResult) {
+        scanning.set(false);
+        pendingCall = null;
+        if (call == null) return;
+        Intent data = activityResult.getData();
+        if (data != null && data.hasExtra("error")) {
+            call.reject(data.getStringExtra("error"), data.getStringExtra("code"));
+            return;
+        }
+        JSObject result = new JSObject();
+        if (activityResult.getResultCode() != Activity.RESULT_OK || data == null) {
+            result.put("cancelled", true);
+        } else {
+            String barcode = data.getStringExtra("barcode");
+            String format = data.getStringExtra("format");
+            if (barcode == null || barcode.isEmpty() || !BarcodeFormats.supports(format)) {
+                call.reject("识别结果无效，请重新扫描商品一维条码", "INVALID_RESULT");
+                return;
+            }
+            result.put("cancelled", false);
+            result.put("barcode", barcode);
+            result.put("format", format);
+        }
+        call.resolve(result);
+    }
+
+    private void fail(PluginCall call, String message, String code) {
+        scanning.set(false);
+        pendingCall = null;
+        call.reject(message, code);
+    }
+
+    @Override
+    protected void handleOnDestroy() {
+        if (pendingCall != null) {
+            fail(pendingCall, "扫码已中断，请重新打开扫码", "SCAN_INTERRUPTED");
+        }
+        scanning.set(false);
+        super.handleOnDestroy();
+    }
+}

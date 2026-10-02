@@ -2,6 +2,8 @@
 import { computed, ref, unref } from 'vue'
 import { showToast, showConfirmDialog } from 'vant'
 import { createInventoryStore } from './store/inventoryStore.js'
+import { scanBarcode } from './scanner/barcodeScanner.js'
+import { normalizeBarcode, findProductByScan } from './core/inventory.js'
 
 const store = createInventoryStore()
 const tab = ref('products')
@@ -15,7 +17,10 @@ const editingId = ref('')
 const formError = ref('')
 const movementError = ref('')
 const status = ref('')
-const productForm = ref({ name: '', sku: '', unit: '件', note: '' })
+const scanning = ref(false)
+const unknownBarcode = ref('')
+const unknownSheet = ref(false)
+const productForm = ref({ name: '', sku: '', barcode: '', unit: '件', note: '' })
 const movementForm = ref({ productId: '', type: 'in', quantity: '', note: '' })
 const storageError = computed(() => unref(store.error) || '')
 const products = computed(() => store.state.products)
@@ -24,7 +29,7 @@ const totalStock = computed(() => products.value.reduce((sum, product) => sum + 
 const inStockCount = computed(() => products.value.filter(product => product.stock > 0).length)
 const filteredProducts = computed(() => {
   const query = search.value.trim().toLowerCase()
-  return [...products.value].filter(product => !query || product.name.toLowerCase().includes(query) || product.sku.toLowerCase().includes(query))
+  return [...products.value].filter(product => !query || product.name.toLowerCase().includes(query) || product.sku.toLowerCase().includes(query) || (product.barcode || '').toLowerCase().includes(query))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
 })
 const filteredMovements = computed(() => [...movements.value]
@@ -44,16 +49,52 @@ function notify(message) {
   status.value = message
   showToast({ message, position: 'top' })
 }
-function openProduct(product) {
+function openProduct(product, barcode = '') {
   if (storageError.value) return
   editingId.value = product?.id || ''
-  productForm.value = { name: product?.name || '', sku: product?.sku || '', unit: product?.unit || '件', note: product?.note || '' }
+  productForm.value = { name: product?.name || '', sku: product?.sku || '', barcode: product?.barcode || barcode, unit: product?.unit || '件', note: product?.note || '' }
   formError.value = ''
   productSheet.value = true
 }
+async function startScan(target = 'lookup') {
+  if (scanning.value || storageError.value) return
+  scanning.value = true
+  try {
+    const result = await scanBarcode()
+    if (!result) { notify('已取消扫码'); return }
+    const barcode = normalizeBarcode(result.barcode)
+    if (!barcode) {
+      notify('条码内容为空，请重新扫描或手动输入。')
+      return
+    }
+    if (target === 'form') {
+      if (!productSheet.value) return
+      productForm.value.barcode = barcode
+      formError.value = ''
+      notify('条码已填入，请确认商品信息后保存')
+      return
+    }
+    const product = findProductByScan(store.state, { barcode, format: result.format })
+    if (product) {
+      openDetail(product)
+      notify(`已找到商品：${product.name}`)
+    } else {
+      unknownBarcode.value = barcode
+      unknownSheet.value = true
+    }
+  } catch (error) {
+    notify(error.message || '扫码失败，请重试或手动输入条码。')
+  } finally {
+    scanning.value = false
+  }
+}
+function addScannedProduct() {
+  unknownSheet.value = false
+  openProduct(undefined, unknownBarcode.value)
+}
 function saveProduct() {
-  if (storageError.value) return
-  const input = Object.fromEntries(Object.entries(productForm.value).map(([key, value]) => [key, value.trim()]))
+  if (storageError.value || scanning.value) return
+  const input = Object.fromEntries(Object.entries(productForm.value).map(([key, value]) => [key, key === 'barcode' ? value : value.trim()]))
   if (!input.name) { formError.value = '请输入商品名称。'; return }
   if (!input.unit) { formError.value = '请输入计量单位，例如件、箱或千克。'; return }
   try {
@@ -136,9 +177,9 @@ function saveMovement() {
         </section>
 
         <section v-if="tab === 'products' || tab === 'stock'" class="content-panel">
-          <div class="panel-toolbar"><h2>{{ tab === 'products' ? '全部商品' : '库存清单' }}<span>{{ products.length }}</span></h2><div class="search-field"><van-icon name="search" /><input v-model="search" type="search" aria-label="搜索商品名称或编号" placeholder="搜索商品名称或编号" /><button v-if="search" class="search-clear" aria-label="清空搜索" @click="search = ''"><van-icon name="cross" /></button></div></div>
+          <div class="panel-toolbar"><h2>{{ tab === 'products' ? '全部商品' : '库存清单' }}<span>{{ products.length }}</span></h2><div class="lookup-tools"><button class="button button-secondary scan-lookup" :disabled="scanning || !!storageError" :aria-busy="scanning" aria-label="扫码查找商品" @click="startScan()"><van-icon name="scan" />{{ scanning ? '正在扫码…' : '扫码查商品' }}</button><div class="search-field"><van-icon name="search" /><input v-model="search" type="search" aria-label="搜索商品名称、编号或条码" placeholder="搜索名称、编号或条码" /><button v-if="search" class="search-clear" aria-label="清空搜索" @click="search = ''"><van-icon name="cross" /></button></div></div></div>
           <div v-if="!products.length" class="empty-state"><div class="empty-illustration"><svg viewBox="0 0 100 100" fill="none" aria-hidden="true"><rect x="17" y="33" width="66" height="49" rx="9" fill="#e8f2f3"/><path d="M19 36 50 20l31 16-31 17-31-17Z" fill="#d0e6e7"/><path d="M50 53v28M34 29l31 17" stroke="#7baeb0" stroke-width="2"/><rect x="60" y="64" width="25" height="25" rx="12.5" fill="#1d8a7a"/><path d="M72.5 70v13m-6.5-6.5h13" stroke="white" stroke-width="2" stroke-linecap="round"/></svg></div><h3>从第一件商品开始</h3><p>添加商品信息，再记录入库数量。<br />商品和库存变化会保存在这台设备上。</p><button class="button button-primary" :disabled="!!storageError" @click="openProduct()"><van-icon name="plus" />添加第一件商品</button></div>
-          <div v-else-if="!filteredProducts.length" class="empty-state compact"><van-icon name="search" class="empty-icon" /><h3>没有找到相关商品</h3><p>换一个名称或商品编号试试。</p><button class="text-button" @click="search = ''">清空搜索</button></div>
+          <div v-else-if="!filteredProducts.length" class="empty-state compact"><van-icon name="search" class="empty-icon" /><h3>没有找到相关商品</h3><p>换一个名称、商品编号或条码试试。</p><button class="text-button" @click="search = ''">清空搜索</button></div>
           <div v-else class="product-list">
             <div class="list-column-labels"><span>商品信息</span><span>当前库存</span><span>{{ tab === 'stock' ? '库存操作' : '' }}</span></div>
             <article v-for="product in filteredProducts" :key="product.id" class="product-row">
@@ -169,9 +210,10 @@ function saveMovement() {
       <form class="sheet-form" @submit.prevent="saveProduct">
         <label class="form-field"><span>商品名称 <em>*</em></span><input v-model="productForm.name" name="product-name" placeholder="例如：纯棉短袖 T 恤" maxlength="80" autocomplete="off" required /><small>{{ productForm.name.length }}/80</small></label>
         <div class="form-grid"><label class="form-field"><span>商品编号</span><input v-model="productForm.sku" name="product-sku" placeholder="选填，例如 SKU001" maxlength="40" autocomplete="off" /></label><label class="form-field"><span>计量单位 <em>*</em></span><input v-model="productForm.unit" name="product-unit" placeholder="例如：件" maxlength="12" required /></label></div>
+        <div class="form-field"><label for="product-barcode" class="barcode-label">商品条码</label><div class="barcode-input"><input id="product-barcode" v-model="productForm.barcode" name="product-barcode" type="text" placeholder="选填，扫描或手动输入" maxlength="80" autocomplete="off" :disabled="scanning" /><button type="button" class="button button-secondary" :disabled="scanning || !!storageError" :aria-busy="scanning" aria-label="扫码填写商品条码" @click="startScan('form')"><van-icon name="scan" />{{ scanning ? '扫码中' : '扫码' }}</button></div><small class="barcode-help">条码与商品编号分别保存，支持前导 0。{{ productForm.barcode.length }}/80</small></div>
         <label class="form-field"><span>备注</span><textarea v-model="productForm.note" name="product-note" placeholder="选填，记录规格或其他说明" maxlength="300" rows="3"></textarea><small>{{ productForm.note.length }}/300</small></label>
         <p v-if="formError" class="form-error" role="alert"><van-icon name="warning-o" />{{ formError }}</p>
-        <div class="form-actions"><button type="button" class="button button-secondary" @click="productSheet = false">取消</button><button type="submit" class="button button-primary" :disabled="!!storageError">{{ editingId ? '保存修改' : '保存商品' }}</button></div>
+        <div class="form-actions"><button type="button" class="button button-secondary" @click="productSheet = false">取消</button><button type="submit" class="button button-primary" :disabled="!!storageError || scanning">{{ editingId ? '保存修改' : '保存商品' }}</button></div>
       </form>
     </van-popup>
 
@@ -188,8 +230,13 @@ function saveMovement() {
       </form>
     </van-popup>
 
+    <van-popup v-model:show="unknownSheet" position="bottom" round closeable class="sheet-popup" aria-label="未找到条码对应商品">
+      <div class="sheet-header"><span class="sheet-kicker">BARCODE LOOKUP</span><h2>尚未登记这个条码</h2><p>本机商品中没有对应条码。你可以建立商品档案，库存不会自动变化。已有商品请取消后打开商品详情，在编辑中绑定条码。</p></div>
+      <div class="detail-body"><div class="unknown-barcode"><span>扫描结果</span><strong>{{ unknownBarcode }}</strong></div><div class="form-actions"><button type="button" class="button button-secondary" @click="unknownSheet = false">取消</button><button type="button" class="button button-primary" :disabled="!!storageError" @click="addScannedProduct">新增商品并填入条码</button></div></div>
+    </van-popup>
+
     <van-popup v-model:show="detailSheet" position="bottom" round closeable class="sheet-popup detail-popup" aria-label="商品详情">
-      <template v-if="detailProduct"><div class="sheet-header"><span class="sheet-kicker">PRODUCT DETAILS</span><h2>商品详情</h2></div><div class="detail-body"><div class="detail-product"><span class="product-avatar large">{{ detailProduct.name.slice(0, 1) }}</span><div><h3>{{ detailProduct.name }}</h3><p>{{ detailProduct.sku ? `编号 ${detailProduct.sku}` : '未设置商品编号' }}</p></div></div><div class="detail-stock"><span>当前库存</span><strong>{{ detailProduct.stock.toLocaleString('zh-CN') }}<small>{{ detailProduct.unit }}</small></strong><div class="detail-stock-actions"><button class="button button-secondary" :disabled="!!storageError || detailProduct.stock === 0" @click="openMovement('out', detailProduct)">出库</button><button class="button button-primary" :disabled="!!storageError" @click="openMovement('in', detailProduct)">入库</button></div></div><dl class="detail-meta"><div><dt>备注</dt><dd>{{ detailProduct.note || '暂无备注' }}</dd></div><div><dt>创建时间</dt><dd>{{ formatDate(detailProduct.createdAt, true) }}</dd></div><div><dt>更新时间</dt><dd>{{ formatDate(detailProduct.updatedAt, true) }}</dd></div></dl><div class="detail-bottom-actions"><button class="button button-secondary" :disabled="!!storageError" @click="editDetail"><van-icon name="edit" />编辑商品</button><button class="button button-danger" :disabled="!!storageError || detailProduct.stock > 0" @click="removeProduct"><van-icon name="delete-o" />删除商品</button></div><p v-if="detailProduct.stock > 0" class="delete-help">商品仍有库存，出库归零后才能删除。</p></div></template>
+      <template v-if="detailProduct"><div class="sheet-header"><span class="sheet-kicker">PRODUCT DETAILS</span><h2>商品详情</h2></div><div class="detail-body"><div class="detail-product"><span class="product-avatar large">{{ detailProduct.name.slice(0, 1) }}</span><div><h3>{{ detailProduct.name }}</h3><p>{{ detailProduct.sku ? `编号 ${detailProduct.sku}` : '未设置商品编号' }}</p></div></div><div class="detail-stock"><span>当前库存</span><strong>{{ detailProduct.stock.toLocaleString('zh-CN') }}<small>{{ detailProduct.unit }}</small></strong><div class="detail-stock-actions"><button class="button button-secondary" :disabled="!!storageError || detailProduct.stock === 0" @click="openMovement('out', detailProduct)">出库</button><button class="button button-primary" :disabled="!!storageError" @click="openMovement('in', detailProduct)">入库</button></div></div><dl class="detail-meta"><div><dt>商品条码</dt><dd class="barcode-value">{{ detailProduct.barcode || '未设置条码' }}</dd></div><div><dt>备注</dt><dd>{{ detailProduct.note || '暂无备注' }}</dd></div><div><dt>创建时间</dt><dd>{{ formatDate(detailProduct.createdAt, true) }}</dd></div><div><dt>更新时间</dt><dd>{{ formatDate(detailProduct.updatedAt, true) }}</dd></div></dl><div class="detail-bottom-actions"><button class="button button-secondary" :disabled="!!storageError" @click="editDetail"><van-icon name="edit" />编辑商品</button><button class="button button-danger" :disabled="!!storageError || detailProduct.stock > 0" @click="removeProduct"><van-icon name="delete-o" />删除商品</button></div><p v-if="detailProduct.stock > 0" class="delete-help">商品仍有库存，出库归零后才能删除。</p></div></template>
     </van-popup>
   </div>
 </template>

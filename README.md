@@ -1,10 +1,10 @@
-# 简库存 · Android 库存管理 MVP
+# 简库存 · Android 库存管理 M2
 
 一个使用 **Vue 3 + JavaScript + Vant + Capacitor** 开发的本地库存 App。首次打开为空数据，可以从新增商品开始使用。所有页面及资源随 APK 打包，业务不依赖服务器。
 
 ## 手机安装包
 
-[下载 Android APK](https://github.com/beacon-of-science/inventory-app/releases/download/v0.1.0/inventory-app-debug.apk) · [Releases 发布页](https://github.com/beacon-of-science/inventory-app/releases/tag/v0.1.0)
+[下载 Android APK](https://github.com/beacon-of-science/inventory-app/releases/download/v0.2.0/inventory-app-debug.apk) · [Releases 发布页](https://github.com/beacon-of-science/inventory-app/releases/tag/v0.2.0)
 
 这是 Debug 测试版，支持 Android 7.0 及以上。手机安装与使用不需要安装 Node.js；下面的 Node.js 步骤仅用于修改源码和重新打包。
 
@@ -19,7 +19,19 @@
 - 本地写入失败不提交库存变更；启动数据损坏或版本不支持时阻止写入，避免覆盖原数据。
 - 中文手机与桌面布局、空态、错误提示、删除确认。
 
-扫码、OCR、AI、服务器后端、云同步和备份恢复属于后续里程碑。
+M2 已支持 Android 摄像头单次扫描商品条形码。连续扫码、自动出入库、OCR、AI、服务器后端、云同步和备份恢复属于后续里程碑。
+
+## M2 扫码使用
+
+1. 新增或编辑商品时填写「商品条码」，也可点击表单中的扫码按钮读取包装条形码。条码与内部商品编号独立，前导零会保留；一个非空条码只能绑定一个商品。
+2. 在商品或库存页面点击「扫码查找」，首次使用时允许相机权限，将条形码置于取景框内。
+3. 已绑定的条码会打开对应商品详情。未知条码会提示，可选择新增并预填条码；不会联网查询商品资料。
+4. 扫码只识别和定位商品，入库或出库仍需手动确认数量。取消、权限拒绝和扫描失败不会修改库存。
+5. 支持 EAN-13、EAN-8、UPC-A、UPC-E、Code 128、Code 39、Code 93、ITF、Codabar；不扫描二维码。60 秒未识别会提示重试。
+6. UPC-A 的 12 位表示与前置零的 EAN-13 表示可兼容定位；若两种表示绑定到不同商品会提示冲突。其他格式精确匹配，扫描识别后的字符串不转成数字。
+7. 摄像头扫描仅在 Android APK 中提供；电脑浏览器用于开发预览，可手动输入条码。
+
+旧 MVP 数据仍使用原本的本地存储键与版本，缺少条码的商品按未绑定处理，原库存和流水保留。更新 APK 时请覆盖安装，不要卸载或清除应用数据。
 
 ## 快速运行
 
@@ -105,7 +117,7 @@ android/                    Android Studio / Gradle 工程
 capacitor.config.json       应用标识与网页构建目录
 ```
 
-已通过 92 项自动化测试、生产网页构建与 Android Debug 构建；APK 签名、对齐和包信息检查通过。浏览器已验证商品管理、出入库、库存不足保护和刷新后数据保留。尚未完成 Android 真机安装验证。
+M2 已通过 128 项 JavaScript 自动化测试、7 项原生条码生成/解码测试、生产网页构建与 Android Debug 构建。浏览器模拟扫码结果已验证已知商品定位、未知条码新增、表单预填、重复保护、取消、权限错误、UPC/EAN 兼容和刷新后的条码/库存保留。原生解码测试不等于真机摄像头验证；目前尚未验证手机安装、实际对焦扫码、系统权限弹窗和后台恢复。
 
 ## 本地数据说明
 
@@ -119,3 +131,5 @@ localStorage 键为 `inventory-mvp`，内容包含版本 1 的商品与流水。
 - [Vant 4](https://vant-ui.github.io/vant/)
 - [Capacitor 环境要求](https://capacitorjs.com/docs/getting-started/environment-setup)
 - [Capacitor 开发与构建流程](https://capacitorjs.com/docs/basics/workflow)
+
+扫码使用 [ZXing Android Embedded](https://github.com/journeyapps/zxing-android-embedded) 4.3.0 和 ZXing Core，以 [Capacitor 自定义原生插件](https://capacitorjs.com/docs/plugins/android) 接入。识别在设备本地完成，不保存或上传摄像头图片；官方 Apache 2.0 许可证随 APK 打包在 THIRD_PARTY_LICENSES.txt。

@@ -1,4 +1,4 @@
-import { createEmptyState } from './inventory.js'
+import { createEmptyState, normalizeBarcode } from './inventory.js'
 
 export const STORAGE_KEY = 'inventory-mvp'
 export const STORAGE_VERSION = 1
@@ -27,6 +27,7 @@ export function validateState(state) {
 
   const ids = new Set()
   const skus = new Set()
+  const barcodes = new Set()
   for (const product of state.products) {
     if (!object(product) || !validText(product.id, 200, true) ||
         !validText(product.name, 80, true) || !validText(product.sku, 40) ||
@@ -37,6 +38,12 @@ export function validateState(state) {
     }
     if (ids.has(product.id)) throw new Error('本地商品标识重复')
     ids.add(product.id)
+    if (Object.prototype.hasOwnProperty.call(product, 'barcode')) {
+      const barcode = normalizeBarcode(product.barcode)
+      if (barcode !== product.barcode) throw new Error('本地商品条码格式不正确')
+      if (barcode && barcodes.has(barcode)) throw new Error('本地商品条码重复')
+      if (barcode) barcodes.add(barcode)
+    }
     if (product.sku) {
       const normalized = product.sku.toLowerCase()
       if (skus.has(normalized)) throw new Error('本地商品 SKU 重复')
@@ -97,7 +104,14 @@ export function loadState(storage) {
   if (envelope.version !== STORAGE_VERSION) {
     throw new Error('本地库存数据版本不受支持，请先备份原数据')
   }
-  return validateState(envelope.state)
+  const state = validateState(envelope.state)
+  // Existing v1 records have no barcode; migrate in memory without writing on load.
+  return {
+    ...state,
+    products: state.products.map((product) => Object.prototype.hasOwnProperty.call(product, 'barcode')
+      ? product
+      : { ...product, barcode: '' }),
+  }
 }
 
 export function saveState(storage, state) {
