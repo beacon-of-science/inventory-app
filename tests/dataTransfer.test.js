@@ -66,7 +66,7 @@ test('导出导入 roundtrip 包含分类条码阈值及流水，导入对象独
   const text = exportInventory(original)
   const data = JSON.parse(text)
   assert.equal(data.format, 'inventory-app')
-  assert.equal(data.version, 2)
+  assert.equal(data.version, 3)
   const parsed = parseInventoryImport(text)
   assert.deepEqual(parsed, original)
   parsed.products[0].name = '修改副本'
@@ -84,7 +84,7 @@ test('导出导入 roundtrip 包含分类条码阈值及流水，导入对象独
 test('非法格式、版本、时间、商品字段、流水算术不通过导入', () => {
   for (const text of ['{', 'null', '[]', '{}', '42']) assert.throws(() => parseInventoryImport(text))
   for (const change of [
-    data => { data.format = 'other' }, data => { data.version = 3 }, data => { data.version = '1' },
+    data => { data.format = 'other' }, data => { data.version = 4 }, data => { data.version = '1' },
     data => { data.exportedAt = '2026-02-30T10:00:00.000Z' }, data => { delete data.exportedAt },
     data => { data.state.products[0].stock = 10 }, data => { data.state.movements[0].quantity = 2 },
     data => { data.state.products[0].category = ' x ' }, data => { data.state.products[0].lowStockThreshold = '3' },

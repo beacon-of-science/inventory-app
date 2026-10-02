@@ -1,3 +1,4 @@
+import { createPackagingCheck } from './packaging.js'
 /** Inventory rules. Every transition returns a new state and leaves its input untouched. */
 
 export function createEmptyState() {
@@ -28,6 +29,8 @@ function productFields(input, previous) {
   if (productType === 'medicine' && trackingMode !== 'unique') throw new Error('药品必须按单件唯一码管理')
   return {
     productType, trackingMode,
+    specification: textField(input.specification, '规格', 120, {fallback: previous?.specification ?? ''}),
+    manufacturer: textField(input.manufacturer, '生产企业', 120, {fallback: previous?.manufacturer ?? ''}),
     name: textField(input.name, '商品名称', 80, {
       required: true,
       fallback: previous?.name,
@@ -185,8 +188,18 @@ export function recordMovement(state, input, meta) {
   if (!Number.isSafeInteger(afterStock)) throw new Error('库存数量超出安全范围')
   const { id, now } = metadata(meta)
   if (state.movements.some((movement) => movement.id === id)) throw new Error('流水标识已存在')
+  if (input.packagingChecks !== undefined && !Array.isArray(input.packagingChecks)) throw new Error('包装核对列表格式不正确')
+  const seenChecks = new Set()
+  const packagingChecks = (input.packagingChecks ?? []).map(check => {
+    if (!object(check) || product.trackingMode !== 'unique' || !preview.codes.includes(check.unitCode) || seenChecks.has(check.unitCode) || (check.productId !== undefined && check.productId !== product.id)) throw new Error('包装核对与商品或单件唯一码不一致')
+    seenChecks.add(check.unitCode)
+    const record = createPackagingCheck(product, check.unitCode, check.captures, {confirmedSameBox:check.confirmedSameBox, checkedAt:check.checkedAt ?? now})
+    if (record.status === 'conflict') throw new Error('包装文字存在冲突，不能提交出入库')
+    return record
+  })
+  const checksByCode = new Map(packagingChecks.map(check => [check.unitCode,check]))
   const movement = {
-    id, codes: preview.codes,
+    id, codes: preview.codes, packagingChecks,
     ...(input.batchId === undefined ? {} : { batchId: input.batchId.trim() }),
     productId: product.id,
     productName: product.name,
@@ -202,7 +215,7 @@ export function recordMovement(state, input, meta) {
   const updatedProduct = { ...product, stock: afterStock, updatedAt: now }
   return {
     state: {
-      ...state, units: [...(state.units ?? []).map(u => preview.codes.includes(u.code) ? {...u, status: input.type, updatedAt: now} : u), ...preview.newCodes.map(code => ({code, productId: product.id, status: 'in', createdAt: now, updatedAt: now}))],
+      ...state, units: [...(state.units ?? []).map(u => preview.codes.includes(u.code) ? {...u, status: input.type, updatedAt: now, ...(checksByCode.has(u.code) ? {packagingCheck:checksByCode.get(u.code)} : {})} : u), ...preview.newCodes.map(code => ({code, productId: product.id, status: 'in', createdAt: now, updatedAt: now, ...(checksByCode.has(code) ? {packagingCheck:checksByCode.get(code)} : {})}))],
       products: state.products.map((item) => item.id === product.id ? updatedProduct : item),
       movements: [...state.movements, movement],
     },

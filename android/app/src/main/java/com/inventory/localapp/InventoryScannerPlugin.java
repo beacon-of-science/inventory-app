@@ -42,6 +42,7 @@ public class InventoryScannerPlugin extends Plugin {
             return;
         }
         pendingCall = call;
+        if (!CameraOperationGate.acquire(this)) { fail(call, "相机正在用于扫码或包装识别，请先完成或取消", "SCAN_BUSY"); return; }
         if (!getContext().getPackageManager().hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)) {
             fail(call, "此设备没有可用摄像头，请手动输入商品条码", "NO_CAMERA");
             return;
@@ -60,6 +61,7 @@ public class InventoryScannerPlugin extends Plugin {
     @PermissionCallback
     private void cameraPermissionResult(PluginCall call) {
         if (call == null) {
+            CameraOperationGate.release(this);
             scanning.set(false);
             pendingCall = null;
             return;
@@ -91,6 +93,7 @@ public class InventoryScannerPlugin extends Plugin {
 
     @ActivityCallback
     private void scanResult(PluginCall call, ActivityResult activityResult) {
+        CameraOperationGate.release(this);
         scanning.set(false);
         pendingCall = null;
         if (call == null) return;
@@ -128,6 +131,7 @@ public class InventoryScannerPlugin extends Plugin {
     }
 
     private void fail(PluginCall call, String message, String code) {
+        CameraOperationGate.release(this);
         scanning.set(false);
         pendingCall = null;
         call.reject(message, code);
@@ -135,6 +139,7 @@ public class InventoryScannerPlugin extends Plugin {
 
     @Override
     protected void handleOnDestroy() {
+        CameraOperationGate.release(this);
         if (pendingCall != null) {
             fail(pendingCall, "扫码已中断，请重新打开扫码", "SCAN_INTERRUPTED");
         }

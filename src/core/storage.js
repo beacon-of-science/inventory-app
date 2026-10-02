@@ -1,7 +1,8 @@
+import { validatePackagingCheck } from './packaging.js'
 import { createEmptyState, normalizeBarcode, normalizeUnitCode } from './inventory.js'
 
 export const STORAGE_KEY = 'inventory-mvp'
-export const STORAGE_VERSION = 2
+export const STORAGE_VERSION = 3
 
 function object(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -38,6 +39,9 @@ export function validateState(state) {
       throw new Error('本地商品记录已损坏')
     }
     if (!['unknown','ordinary','medicine'].includes(product.productType === undefined ? 'unknown' : product.productType) || !['quantity','unique'].includes(product.trackingMode === undefined ? 'quantity' : product.trackingMode) || (product.productType === 'medicine' && product.trackingMode !== 'unique')) throw new Error('商品类型或管理模式损坏')
+    for (const field of ['specification','manufacturer']) {
+      if (product[field] !== undefined && (!validText(product[field],120) || product[field] !== product[field].trim())) throw new Error('本地包装参考字段格式不正确')
+    }
     if (ids.has(product.id)) throw new Error('本地商品标识重复')
     ids.add(product.id)
     if (Object.prototype.hasOwnProperty.call(product, 'category') &&
@@ -64,6 +68,10 @@ export function validateState(state) {
   const actualUnits = new Map()
   for (const unit of state.units ?? []) {
     if (!object(unit) || normalizeUnitCode(unit.code) !== unit.code || actualUnits.has(unit.code) || !ids.has(unit.productId) || !['in','out'].includes(unit.status) || !validTime(unit.createdAt) || !validTime(unit.updatedAt) || state.products.find(p => p.id === unit.productId).trackingMode !== 'unique') throw new Error('单件实例记录损坏')
+    if (unit.packagingCheck !== undefined) {
+      validatePackagingCheck(unit.packagingCheck)
+      if (unit.packagingCheck.productId !== unit.productId || unit.packagingCheck.unitCode !== unit.code) throw new Error('单件包装核对归属错误')
+    }
     actualUnits.set(unit.code, unit)
   }
   const replayUnits = new Map(), batchIds = new Set(), tracked = new Set()
@@ -88,6 +96,14 @@ export function validateState(state) {
     }
     const codes = movement.codes === undefined ? [] : movement.codes
     if (!Array.isArray(codes) || new Set(codes).size !== codes.length || codes.some(code => normalizeUnitCode(code) !== code)) throw new Error('流水唯一码损坏')
+    const checks = movement.packagingChecks === undefined ? [] : movement.packagingChecks
+    if (!Array.isArray(checks)) throw new Error('包装核对列表损坏')
+    const checksByCode = new Map()
+    for (const check of checks) {
+      validatePackagingCheck(check)
+      if (check.productId !== movement.productId || !codes.includes(check.unitCode) || checksByCode.has(check.unitCode)) throw new Error('流水包装核对归属错误')
+      checksByCode.set(check.unitCode,check)
+    }
     if (codes.length) {
       const product = state.products.find(p => p.id === movement.productId)
       if (!product || product.trackingMode !== 'unique' || codes.length !== movement.quantity || (!tracked.has(product.id) && movement.beforeStock !== 0)) throw new Error('单件流水模式或数量不一致')
@@ -96,7 +112,7 @@ export function validateState(state) {
         const previous = replayUnits.get(code)
         if (previous && previous.productId !== movement.productId) throw new Error('唯一码跨商品绑定')
         if (movement.type === 'in' ? previous?.status === 'in' : !previous || previous.status !== 'in') throw new Error('单件流水状态不一致')
-        replayUnits.set(code, {code, productId: movement.productId, status: movement.type, createdAt: previous?.createdAt ?? movement.createdAt, updatedAt: movement.createdAt})
+        replayUnits.set(code, {code, productId: movement.productId, status: movement.type, createdAt: previous?.createdAt ?? movement.createdAt, updatedAt: movement.createdAt, ...((checksByCode.get(code) ?? previous?.packagingCheck) ? {packagingCheck: checksByCode.get(code) ?? previous.packagingCheck} : {})})
       }
     } else if (tracked.has(movement.productId)) throw new Error('单件历史中不能混入数量流水')
     if (movementIds.has(movement.id)) throw new Error('本地流水标识重复')
@@ -116,6 +132,7 @@ export function validateState(state) {
   if (actualUnits.size !== replayUnits.size) throw new Error('单件实例与历史数量不一致')
   for (const [code, expected] of replayUnits) {
     const unit = actualUnits.get(code)
+    if (snapshot(unit?.packagingCheck) !== snapshot(expected.packagingCheck)) throw new Error('单件最新包装核对与流水不一致')
     if (!unit || ['productId','status','createdAt','updatedAt'].some(key => unit[key] !== expected[key])) throw new Error('单件实例与流水不一致')
   }
   for (const product of state.products) {
@@ -142,9 +159,10 @@ export function loadState(storage) {
   if (!object(envelope) || !Object.prototype.hasOwnProperty.call(envelope, 'version')) {
     throw new Error('本地库存数据格式不受支持，请先备份原数据')
   }
-  if (![1, STORAGE_VERSION].includes(envelope.version)) {
+  if (![1, 2, STORAGE_VERSION].includes(envelope.version)) {
     throw new Error('本地库存数据版本不受支持，请先备份原数据')
   }
+  if (envelope.version < 3 && (envelope.state?.products?.some(p => p.specification || p.manufacturer) || envelope.state?.units?.some(u => u.packagingCheck !== undefined) || envelope.state?.movements?.some(m => (m.packagingChecks?.length ?? 0) > 0))) throw new Error('旧版本本地数据不能包含包装核对记录')
   return migrateState(envelope.state)
 }
 
@@ -154,10 +172,12 @@ export function migrateState(source) {
   return {
     ...state,
     units: state.units ?? [],
-    movements: state.movements.map(m => ({...m, codes: m.codes ?? []})),
+    movements: state.movements.map(m => ({...m, codes: m.codes ?? [], packagingChecks:m.packagingChecks ?? []})),
     products: state.products.map((product) => ({
       ...product,
       barcode: product.barcode ?? '',
+      specification: product.specification ?? '',
+      manufacturer: product.manufacturer ?? '',
       category: product.category ?? '',
       lowStockThreshold: product.lowStockThreshold ?? null,
       productType: product.productType === undefined ? 'unknown' : product.productType,
@@ -175,3 +195,5 @@ export function saveState(storage, state) {
     throw new Error('保存库存数据失败，请检查浏览器存储空间或权限')
   }
 }
+
+function snapshot(value) { return JSON.stringify(value, (_, item) => object(item) ? Object.fromEntries(Object.keys(item).sort().map(key => [key,item[key]])) : item) }

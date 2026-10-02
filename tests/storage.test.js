@@ -43,7 +43,7 @@ test('交错商品的流水分别计算，不依赖连续排列', () => {
 for (const [label, raw] of [
   ['破损 JSON', '{'], ['null 封套', 'null'], ['数组封套', '[]'], ['缺少版本', '{}'],
   ['旧版本', '{"version":0,"state":{"products":[],"movements":[]}}'],
-  ['未来版本', '{"version":3,"state":{"products":[],"movements":[]}}'],
+  ['未来版本', '{"version":4,"state":{"products":[],"movements":[]}}'],
   ['字符串版本', '{"version":"1","state":{"products":[],"movements":[]}}'],
   ['缺失状态', '{"version":1}'],
 ]) {

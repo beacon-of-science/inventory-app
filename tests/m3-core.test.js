@@ -64,7 +64,7 @@ test('M3 保存失败不改内存或存储、批次持久化防重',()=>{
  const value={...input('in',['001'],{confirmBinding:true,batchId:'persist'}),productId:p.id}
  const before=JSON.stringify(store.state),previous=raw;fail=true
  assert.throws(()=>store.recordMovement(value),/保存/);assert.equal(JSON.stringify(store.state),before);assert.equal(raw,previous)
- fail=false;store.recordMovement(value);assert.equal(writes,2);assert.equal(JSON.parse(raw).version,2)
+ fail=false;store.recordMovement(value);assert.equal(writes,2);assert.equal(JSON.parse(raw).version,3)
  const restored=createInventoryStore(storage);assert.equal(restored.state.units.length,1)
  assert.throws(()=>restored.recordMovement(value),/批次/);assert.equal(writes,2)
 })
