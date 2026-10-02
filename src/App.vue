@@ -4,7 +4,7 @@ import { showToast, showConfirmDialog, closeDialog } from 'vant'
 import { createInventoryStore } from './store/inventoryStore.js'
 import { scanBarcode, scanInventoryBatch } from './scanner/barcodeScanner.js'
 import { normalizeBarcode, findProductByScan, isLowStock, validateScanBatch, normalizeUnitCode } from './core/inventory.js'
-import { createPackagingCheck, extractPackagingFields, normalizePackagingText } from './core/packaging.js'
+import { createPackagingCheck, extractPackagingFields, getOcrFieldOptions, normalizePackagingText } from './core/packaging.js'
 import { capturePackagingText } from './ocr/packagingOcr.js'
 import { exportInventory, parseInventoryImport } from './core/dataTransfer.js'
 import { exportInventoryFile, importInventoryFile } from './files/inventoryFiles.js'
@@ -12,29 +12,44 @@ import { exportInventoryFile, importInventoryFile } from './files/inventoryFiles
 import { installAndroidBackHandler, minimizeApp } from './navigation/androidNavigation.js'
 import OcrFieldPicker from './components/OcrFieldPicker.vue'
 import { chooseBackAction } from './navigation/backNavigation.js'
-import { resolveSwipeNavigation } from './navigation/swipeNavigation.js'
+import { resolveSwipeNavigation, classifySwipeIntent } from './navigation/swipeNavigation.js'
 const store = createInventoryStore()
 const pageMotion = ref('page-forward')
 const pageSwitching = ref(false)
-let pageSwitchTimer, swipeStart = null
+let pageSwitchTimer, swipeStart = null, suppressSwipeClickUntil = 0
+const dragOffset = ref(0), draggingPage = ref(false)
+function cancelSwipe() { swipeStart = null; dragOffset.value = 0; draggingPage.value = false }
+function guardSwipeClick(event) {
+  if (performance.now() < suppressSwipeClickUntil) { event.preventDefault(); event.stopPropagation() }
+}
 function finishPageSwitch() { pageSwitching.value = false; clearTimeout(pageSwitchTimer) }
 function swipeBlocked() {
   return pageSwitching.value || productSheet.value || movementSheet.value || detailSheet.value || unknownSheet.value || importSheet.value || backupSheet.value || dialogOpen.value || scanning.value || batchScanning.value || ocrBusy.value || productOcrBusy.value || transferBusy.value
 }
 function beginSwipe(event) {
-  swipeStart = null
-  if (event.touches.length !== 1 || swipeBlocked() || event.target.closest('button,a,input,textarea,select,summary,[role="button"],pre,code')) return
+  cancelSwipe()
+  if (event.touches.length !== 1 || swipeBlocked() || event.target.closest('input,textarea,select,summary,[contenteditable="true"],pre,code')) return
   const point = event.touches[0]
-  swipeStart = {startX:point.clientX,startY:point.clientY,startedAt:performance.now(),currentTab:tab.value,viewportWidth:window.innerWidth}
+  if (point.clientX <= 24 || point.clientX >= window.innerWidth - 24) return
+  swipeStart = {startX:point.clientX,startY:point.clientY,startedAt:performance.now(),currentTab:tab.value,viewportWidth:window.innerWidth,intent:'pending'}
 }
 function moveSwipe(event) {
   if (!swipeStart) return
-  if (event.touches.length !== 1 || Math.abs(event.touches[0].clientY - swipeStart.startY) > 28) swipeStart = null
+  if (event.touches.length !== 1 || swipeBlocked()) { cancelSwipe(); return }
+  const dx = event.touches[0].clientX - swipeStart.startX, dy = event.touches[0].clientY - swipeStart.startY
+  if (swipeStart.intent === 'pending') swipeStart.intent = classifySwipeIntent(dx,dy)
+  if (swipeStart.intent === 'vertical') { cancelSwipe(); return }
+  if (swipeStart.intent === 'horizontal') {
+    draggingPage.value = true
+    const atEnd = (tab.value === 'products' && dx > 0) || (tab.value === 'history' && dx < 0)
+    dragOffset.value = Math.max(-72,Math.min(72,dx*(atEnd ? .15 : .55)))
+  }
 }
 function endSwipe(event) {
-  const start = swipeStart; swipeStart = null
+  const start = swipeStart; cancelSwipe()
   if (!start || swipeBlocked() || event.changedTouches.length !== 1 || event.touches.length || start.currentTab !== tab.value) return
   const point = event.changedTouches[0]
+  if (start.intent === 'horizontal') suppressSwipeClickUntil = performance.now() + 300
   const next = resolveSwipeNavigation({...start,endX:point.clientX,endY:point.clientY,durationMs:performance.now()-start.startedAt})
   if (next) navigateTo(next)
 }
@@ -43,7 +58,7 @@ const dialogOpen = ref(false)
 let lastRootBack = 0, stopAndroidBack = () => {}
 function navigateTo(next) {
   if (tab.value === next || pageSwitching.value) return
-  pageSwitching.value = true; swipeStart = null
+  pageSwitching.value = true; cancelSwipe()
   pageSwitchTimer = setTimeout(finishPageSwitch, 260)
   pageMotion.value = ['products','stock','history'].indexOf(next) > ['products','stock','history'].indexOf(tab.value) ? 'page-forward' : 'page-back'
   tab.value = next; search.value = ''; filtersOpen.value = false; lastRootBack = 0
@@ -106,9 +121,11 @@ const packagingCaptures = ref(Object.create(null))
 const sameBoxConfirmed = ref(Object.create(null))
 const allowIncomplete = ref(false)
 const intakeCaptures = ref([]), intakeUnitCode = ref('')
+const intakeNameConfirmed = ref(false)
 const productOcrCaptures = ref([]), productOcrBusy = ref(false)
 const emptyExtraction = () => Object.fromEntries(['name','specification','manufacturer'].map(key => [key,{value:'',status:'missing',candidates:[]}]))
 const intakeFields = computed(() => intakeCaptures.value.length ? extractPackagingFields(intakeCaptures.value,{expectedName:movementProduct.value?.name}) : emptyExtraction())
+const intakeNameChoice = computed(() => intakeCaptures.value.length ? getOcrFieldOptions(intakeCaptures.value).name.find(value => normalizePackagingText(value) === normalizePackagingText(movementProduct.value?.name || '')) || '' : '')
 const productOcrFields = computed(() => productOcrCaptures.value.length ? extractPackagingFields(productOcrCaptures.value) : emptyExtraction())
 const extractionLabels = {recognized:'标签或已有名称匹配',missing:'未找到，请补拍或从原文选取',ambiguous:'多个候选，请点选核对',suggested:'推测候选，请点选核对'}
 function useOcrCandidate(key, value) {
@@ -117,7 +134,7 @@ function useOcrCandidate(key, value) {
 }
 const intakeProblem = computed(() => {
   if (!intakeCaptures.value.length) return ''
-  if (intakeFields.value.name.status !== 'recognized') return '未提取到明确药名，请拍清药名或通用名称，再翻面补拍。'
+  if (intakeFields.value.name.status !== 'recognized') return intakeNameChoice.value ? (intakeNameConfirmed.value ? '' : '清理后的名称与当前商品相同，请对照包装并确认下方药名。') : '未提取到明确药名，请拍清药名或通用名称，再翻面补拍。'
   if (normalizePackagingText(intakeFields.value.name.value) !== normalizePackagingText(movementProduct.value?.name || '')) return '拍到的药名与当前商品不同，请检查是否选错商品或拿错盒。'
   return ''
 })
@@ -150,6 +167,7 @@ async function captureIntakeFace() {
     const result = await capturePackagingText()
     if (!result || !movementSheet.value || movementProduct.value?.id !== productId || batchId.value !== operation) return
     intakeCaptures.value.push({id:freshBatchId(),text:result.text,createdAt:new Date().toISOString()})
+    intakeNameConfirmed.value = false
     bindIntakeToFirstCode()
     if (intakeUnitCode.value) { packagingCaptures.value[intakeUnitCode.value] = [...intakeCaptures.value]; sameBoxConfirmed.value[intakeUnitCode.value] = false; ocrUnitCode.value = intakeUnitCode.value }
     allowIncomplete.value = false
@@ -166,7 +184,7 @@ function bindIntakeToFirstCode() {
 function resetIntakePhoto() {
   if (ocrBusy.value) return
   if (intakeUnitCode.value) { delete packagingCaptures.value[intakeUnitCode.value]; delete sameBoxConfirmed.value[intakeUnitCode.value] }
-  intakeCaptures.value = []; intakeUnitCode.value = ''; allowIncomplete.value = false
+  intakeCaptures.value = []; intakeUnitCode.value = ''; intakeNameConfirmed.value = false; allowIncomplete.value = false
 }
 const packagingStatusLabels = { matched: '文字一致', conflict: '信息冲突', incomplete: '未完全核实' }
 const fieldStatusLabels = { matched: '一致', conflict: '冲突', missing: '未核实', unconfigured: '参考信息未配置' }
@@ -189,12 +207,12 @@ const selectedCaptures = computed(() => packagingCaptures.value[ocrUnitCode.valu
 const selectedPackaging = computed(() => packagingPreviews.value[ocrUnitCode.value])
 function selectOcrUnit(code) { if (!ocrBusy.value) ocrUnitCode.value = code }
 function resetPackagingDraft() {
-  packagingCaptures.value = Object.create(null); sameBoxConfirmed.value = Object.create(null); ocrUnitCode.value = ''; allowIncomplete.value = false; intakeCaptures.value = []; intakeUnitCode.value = ''
+  packagingCaptures.value = Object.create(null); sameBoxConfirmed.value = Object.create(null); ocrUnitCode.value = ''; allowIncomplete.value = false; intakeCaptures.value = []; intakeUnitCode.value = ''; intakeNameConfirmed.value = false
 }
 function removePackagingCapture(code, index) {
   if (ocrBusy.value) return
   packagingCaptures.value[code] = (packagingCaptures.value[code] || []).filter((_, i) => i !== index)
-  if (code === intakeUnitCode.value) intakeCaptures.value = [...packagingCaptures.value[code]]
+  if (code === intakeUnitCode.value) { intakeCaptures.value = [...packagingCaptures.value[code]]; intakeNameConfirmed.value = false }
   sameBoxConfirmed.value[code] = false; allowIncomplete.value = false
 }
 async function captureBoxFace() {
@@ -444,7 +462,7 @@ function saveMovement() {
   submitting.value = true
   try {
     store.recordMovement({ ...movementForm.value, quantity: preview.quantity,
-      packagingChecks, ...(movementForm.value.type === 'in' && movementProduct.value.trackingMode === 'unique' ? {referenceFromPackaging:{captures:intakeCaptures.value,confirmedSameBox:true}} : {}), codes: preview.codes, confirmBinding: bindingConfirmed.value, batchId: batchId.value,
+      packagingChecks, ...(movementForm.value.type === 'in' && movementProduct.value.trackingMode === 'unique' ? {referenceFromPackaging:{captures:intakeCaptures.value,confirmedSameBox:true,...(intakeNameConfirmed.value && intakeNameChoice.value ? {confirmedNameCandidate:intakeNameChoice.value} : {})}} : {}), codes: preview.codes, confirmBinding: bindingConfirmed.value, batchId: batchId.value,
       note: movementForm.value.note.trim() })
     submittedPreview.value = preview
     movementSheet.value = false
@@ -508,7 +526,7 @@ function confirmImport() {
 
     <div class="main-layout">
       <header class="mobile-brand"><span class="mini-mark"><van-icon name="apps-o" /></span><span>简库存</span><button class="backup-entry" aria-label="打开数据备份" @click="backupSheet = true"><van-icon name="shield-o" />备份</button></header>
-      <div class="page-stage" @touchstart.passive="beginSwipe" @touchmove.passive="moveSwipe" @touchend.passive="endSwipe" @touchcancel="swipeStart = null"><Transition :name="pageMotion" @after-enter="finishPageSwitch"><main :key="tab" class="refined-main">
+      <div class="page-stage" :class="{'is-dragging':draggingPage}" :style="{'--drag-x':`${dragOffset}px`}" @click.capture="guardSwipeClick" @touchstart.passive="beginSwipe" @touchmove.passive="moveSwipe" @touchend.passive="endSwipe" @touchcancel="cancelSwipe"><Transition :name="pageMotion" @after-enter="finishPageSwitch"><main :key="tab" class="refined-main">
         <div class="page-heading">
           <div><h1>{{ pageTitle }}</h1><p class="page-subtitle">{{ tab === 'products' ? '管理商品，随时掌握库存' : pageDescription }}</p></div><button class="backup-entry desktop-backup" aria-label="打开数据备份" @click="backupSheet = true"><van-icon name="shield-o" />数据备份</button>
           <button v-if="tab === 'products' && products.length" class="button button-primary desktop-add" :disabled="!!storageError || transferBusy" @click="openProduct()"><van-icon name="plus" />新增商品</button>
@@ -582,7 +600,7 @@ function confirmImport() {
             <label class="form-field"><span>待确认{{ movementForm.type === 'in' ? '入库' : '出库' }}数量 <em>*</em></span><div class="quantity-input"><input v-model="movementForm.quantity" name="movement-quantity" type="number" inputmode="numeric" min="1" step="1" placeholder="核对实物后填写正整数" required /><span>{{ movementProduct.unit }}</span></div></label>
           </template>
           <template v-else>
-            <section v-if="movementForm.type === 'in'" class="intake-photo" aria-label="入库拍照提取信息"><h3><span>1</span>拍当前盒包装</h3><p>对准药名、规格和厂家，记录包装原文；不同面可补拍。已有药名会与完整文字行匹配，无标签的规格和厂家暂作候选，需人工核对。</p><button type="button" class="button button-primary" @click="captureIntakeFace" :disabled="intakeCaptures.length >= 6"><van-icon name="photograph" />{{ intakeCaptures.length ? '翻面补拍关键信息' : '拍包装，自动提取' }}</button><div v-if="intakeCaptures.length" class="extracted-fields"><div v-for="(field,key) in intakeFields" :key="key"><span>{{ fieldLabels[key] }}</span><strong>{{ field.value || (field.suggestions || []).join(' / ') || extractionLabels[field.status] }}</strong><small :class="field.status">{{ extractionLabels[field.status] }}</small></div></div><p v-if="intakeProblem" class="form-error">{{ intakeProblem }}</p><p v-if="intakeUnitCode" class="batch-help">本次照片对应：{{ intakeUnitCode }}。其他盒需分别补拍，未拍不会记为已核实。</p><details v-if="intakeCaptures.length" class="intake-original"><summary>查看拍摄原文 · {{ intakeCaptures.length }} 面</summary><p v-for="capture in intakeCaptures" :key="capture.id">{{ capture.text }}</p></details><button v-if="intakeCaptures.length" type="button" class="text-button" @click="resetIntakePhoto">清除本盒照片文字并重新拍摄</button></section><h3 class="flow-step"><span>{{ movementForm.type === 'in' ? '2' : '1' }}</span>{{ movementForm.type === 'in' ? '扫描当前盒单件码' : '选择在库单件码' }}</h3>
+            <section v-if="movementForm.type === 'in'" class="intake-photo" aria-label="入库拍照提取信息"><h3><span>1</span>拍当前盒包装</h3><p>对准药名、规格和厂家，记录包装原文；不同面可补拍。已有药名会与完整文字行匹配，无标签的规格和厂家暂作候选，需人工核对。</p><button type="button" class="button button-primary" @click="captureIntakeFace" :disabled="intakeCaptures.length >= 6"><van-icon name="photograph" />{{ intakeCaptures.length ? '翻面补拍关键信息' : '拍包装，自动提取' }}</button><div v-if="intakeCaptures.length" class="extracted-fields"><div v-for="(field,key) in intakeFields" :key="key"><span>{{ fieldLabels[key] }}</span><strong>{{ field.value || (field.suggestions || []).join(' / ') || extractionLabels[field.status] }}</strong><small :class="field.status">{{ extractionLabels[field.status] }}</small></div></div><label v-if="intakeNameChoice && intakeFields.name.status !== 'recognized'" class="ocr-name-confirm"><input v-model="intakeNameConfirmed" type="checkbox" />我已对照包装，确认清理后的药名为「{{ movementProduct.name }}」<small>这是人工核对；包装文字仍可能标记为未完全核实。</small></label><p v-if="intakeProblem" class="form-error">{{ intakeProblem }}</p><p v-if="intakeUnitCode" class="batch-help">本次照片对应：{{ intakeUnitCode }}。其他盒需分别补拍，未拍不会记为已核实。</p><details v-if="intakeCaptures.length" class="intake-original"><summary>查看拍摄原文 · {{ intakeCaptures.length }} 面</summary><p v-for="capture in intakeCaptures" :key="capture.id">{{ capture.text }}</p></details><button v-if="intakeCaptures.length" type="button" class="text-button" @click="resetIntakePhoto">清除本盒照片文字并重新拍摄</button></section><h3 class="flow-step"><span>{{ movementForm.type === 'in' ? '2' : '1' }}</span>{{ movementForm.type === 'in' ? '扫描当前盒单件码' : '选择在库单件码' }}</h3>
             <div class="scan-mode-note"><p>每个唯一单件码对应一件实物。已在库码不能再次入库；已出库码可回库；出库只接受当前商品的在库码。</p><button type="button" class="button button-secondary" @click="scanMovementBatch">连续扫描单件码</button></div>
             <label class="form-field"><span>待提交单件码（每行一个）</span><textarea v-model="batchCodeText" name="movement-codes" rows="4" placeholder="扫描或逐行输入追溯码 / 实例码，保留前导零" spellcheck="false"></textarea><small class="barcode-help">本地唯一性不能验证药品真伪，也不能自动证明该码属于当前商品。</small></label>
             <button v-if="movementProduct.productType !== 'medicine' && movementForm.type === 'in'" type="button" class="text-button" @click="generateLocalCode">为当前实物生成本地实例码</button>

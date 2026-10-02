@@ -1,7 +1,7 @@
 export const SWIPE_TABS = Object.freeze(['products', 'stock', 'history'])
-export const SWIPE_MIN_DISTANCE = 60
-export const SWIPE_HORIZONTAL_RATIO = 1.5
-export const SWIPE_MAX_DURATION_MS = 700
+export const SWIPE_MIN_DISTANCE = 28
+export const SWIPE_HORIZONTAL_RATIO = 1.15
+export const SWIPE_MAX_DURATION_MS = 1200
 export const SWIPE_EDGE_MARGIN = 24
 
 /** Return one adjacent home tab for an intentional horizontal gesture, otherwise null.
@@ -17,7 +17,21 @@ export function resolveSwipeNavigation(input) {
   if (startX <= SWIPE_EDGE_MARGIN || startX >= viewportWidth - SWIPE_EDGE_MARGIN || startY < 0 || endY < 0 || endX < 0 || endX > viewportWidth) return null
   const deltaX = endX - startX
   const deltaY = endY - startY
-  if (Math.abs(deltaX) < SWIPE_MIN_DISTANCE || Math.abs(deltaX) < Math.abs(deltaY) * SWIPE_HORIZONTAL_RATIO) return null
+  if (classifySwipeIntent(deltaX, deltaY) !== 'horizontal') return null
+  const distance = Math.abs(deltaX)
+  const normalDistance = Math.min(36, Math.max(SWIPE_MIN_DISTANCE, viewportWidth * 0.08))
+  const flick = durationMs > 0 && durationMs <= 300 && distance >= 16 && distance / durationMs >= 0.3
+  if (distance < normalDistance && !flick) return null
   const targetIndex = index + (deltaX < 0 ? 1 : -1)
   return SWIPE_TABS[targetIndex] ?? null
+}
+
+/** Call during movement and retain the first non-pending direction in the UI. */
+export function classifySwipeIntent(deltaX, deltaY) {
+  if (![deltaX, deltaY].every(Number.isFinite)) return 'pending'
+  const horizontal = Math.abs(deltaX), vertical = Math.abs(deltaY)
+  if (Math.max(horizontal, vertical) < 10) return 'pending'
+  if (horizontal >= vertical * SWIPE_HORIZONTAL_RATIO) return 'horizontal'
+  if (vertical >= horizontal * SWIPE_HORIZONTAL_RATIO) return 'vertical'
+  return 'pending'
 }

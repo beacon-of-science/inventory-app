@@ -4,9 +4,17 @@
 
 ## 手机安装包
 
-[下载 Android APK](https://github.com/beacon-of-science/inventory-app/releases/download/v0.5.3/inventory-app-debug.apk) · [Releases 发布页](https://github.com/beacon-of-science/inventory-app/releases/tag/v0.5.3)
+[下载 Android APK](https://github.com/beacon-of-science/inventory-app/releases/download/v0.5.4/inventory-app-debug.apk) · [Releases 发布页](https://github.com/beacon-of-science/inventory-app/releases/tag/v0.5.4)
 
 这是 Debug 测试版，支持 Android 7.0 及以上。手机安装与使用不需要安装 Node.js；下面的 Node.js 步骤仅用于修改源码和重新打包。
+
+## v0.5.4 轻滑与 OCR 候选预处理
+
+主页普通横滑门槛按屏幕宽度自适应至 28–36px；短快甩从 16px 起、速度至少 0.3px/ms。10px 后识别并锁定横/纵方向，纵向滚动优先，慢滑最长允许 1200ms。商品行和操作按钮也可作为起滑位置，横滑后的点击会被拦截；输入框、下拉框、弹层和两侧 24px 系统手势区保持保护。水平拖动有短距离跟手反馈，页面边界有阻力且不循环，未完成切页时回弹。参考 Android 官方位移与速度判定原则，并未声称复刻微信私有实现。
+
+OCR 候选先清理外围横线、竖线和边框，再按字段形状判断。名称框不列剂量/公司、规格框不列电话/批准文号，厂家框不列说明文字；下拉选项也经过同一层筛选。清洗保留内部连字符、小数点、单位、分数与乘号，不把 O 猜成 0，不把 0|25g 猜成 0.25g，也不跨行拼接剂量。清洗结果属于待确认候选，完整原文与既有历史核对规则仍保留。入库时清理后的药名若与当前商品一致，需额外人工勾选确认；未经确认、错药、候选不存在与已有明确文字冲突仍不能放行，人工确认不升级为文字一致。无法归类时可补拍或在商品表单校正。
+
+手机复测：在列表行轻滑、短快甩切页，确认普通点击仍可打开详情、出入库；竖向滚动与输入框内滑动不切页。用带装饰边线的包装拍照，候选应移除外围线，保留实际剂量数字；原文里仍能看到识别字符。真实手机滑动与 OCR 准确率仍需用户复测。
 
 ## v0.5.3 按压反馈与滑动导航
 

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { resolveSwipeNavigation, SWIPE_TABS } from '../src/navigation/swipeNavigation.js'
+import { resolveSwipeNavigation, classifySwipeIntent, SWIPE_TABS } from '../src/navigation/swipeNavigation.js'
 const gesture = (changes = {}) => ({currentTab:'products',startX:240,startY:200,endX:140,endY:210,durationMs:180,viewportWidth:400,...changes})
 
 test('左滑与右滑只切换相邻商品、出入库和记录页', () => {
@@ -15,19 +15,42 @@ test('最左及最右页面不循环也不越界', () => {
   assert.equal(resolveSwipeNavigation(gesture({startX:140,endX:240})),null)
   assert.equal(resolveSwipeNavigation(gesture({currentTab:'history'})),null)
 })
-test('60像素门槛与横向明显优势过滤误触和纵向滚动', () => {
-  assert.equal(resolveSwipeNavigation(gesture({endX:181})),null)
-  assert.equal(resolveSwipeNavigation(gesture({endX:180,endY:200})),'stock')
-  assert.equal(resolveSwipeNavigation(gesture({endX:180,endY:240})),'stock')
-  assert.equal(resolveSwipeNavigation(gesture({endX:180,endY:241})),null)
+test('普通轻滑门槛随视口在28到36像素间，纵向及对角滚动不切页', () => {
+  assert.equal(resolveSwipeNavigation(gesture({endX:209,durationMs:500})),null)
+  assert.equal(resolveSwipeNavigation(gesture({endX:208,durationMs:500})),'stock')
+  assert.equal(resolveSwipeNavigation(gesture({viewportWidth:600,endX:205,durationMs:500})),null)
+  assert.equal(resolveSwipeNavigation(gesture({viewportWidth:600,endX:204,durationMs:500})),'stock')
+  assert.equal(resolveSwipeNavigation(gesture({viewportWidth:300,startX:200,endX:172,durationMs:500})),'stock')
+  assert.equal(resolveSwipeNavigation(gesture({endX:208,endY:227,durationMs:500})),'stock')
+  assert.equal(resolveSwipeNavigation(gesture({endX:208,endY:230,durationMs:500})),null)
   assert.equal(resolveSwipeNavigation(gesture({endX:235,endY:500})),null)
   assert.equal(resolveSwipeNavigation(gesture({endX:140,endY:310})),null)
   assert.equal(resolveSwipeNavigation(gesture({endX:240,endY:200})),null)
 })
-test('超过700毫秒的长按拖动不能切页', () => {
-  assert.equal(resolveSwipeNavigation(gesture({durationMs:700})),'stock')
-  assert.equal(resolveSwipeNavigation(gesture({durationMs:701})),null)
+test('短快甩只需16像素及0.3像素每毫秒，过短抖动或慢短滑不切页', () => {
+  assert.equal(resolveSwipeNavigation(gesture({endX:224,endY:200,durationMs:50})),'stock')
+  assert.equal(resolveSwipeNavigation(gesture({endX:225,endY:200,durationMs:10})),null)
+  assert.equal(resolveSwipeNavigation(gesture({endX:224,endY:200,durationMs:60})),null)
+  assert.equal(resolveSwipeNavigation(gesture({endX:224,endY:200,durationMs:0})),null)
+  assert.equal(resolveSwipeNavigation(gesture({endX:210,endY:200,durationMs:100})),'stock')
+  assert.equal(resolveSwipeNavigation(gesture({endX:210,endY:200,durationMs:101})),null)
+  assert.equal(resolveSwipeNavigation(gesture({currentTab:'stock',startX:150,endX:166,endY:200,durationMs:50})),'products')
+})
+test('慢滑可持续1200毫秒，不在700毫秒提前取消', () => {
+  assert.equal(resolveSwipeNavigation(gesture({durationMs:701})),'stock')
+  assert.equal(resolveSwipeNavigation(gesture({durationMs:1200})),'stock')
+  assert.equal(resolveSwipeNavigation(gesture({durationMs:1201})),null)
   assert.equal(resolveSwipeNavigation(gesture({durationMs:-1})),null)
+})
+test('10像素后明确锁向，抖动及45度对角保持pending', () => {
+  assert.equal(classifySwipeIntent(9,0),'pending')
+  assert.equal(classifySwipeIntent(10,0),'horizontal')
+  assert.equal(classifySwipeIntent(-10,2),'horizontal')
+  assert.equal(classifySwipeIntent(2,-10),'vertical')
+  assert.equal(classifySwipeIntent(10,10),'pending')
+  assert.equal(classifySwipeIntent(11.5,10),'horizontal')
+  assert.equal(classifySwipeIntent(10,11.5),'vertical')
+  for (const value of [null,undefined,'10',NaN,Infinity]) assert.equal(classifySwipeIntent(value,10),'pending')
 })
 test('两侧24像素系统返回区域起点均排除', () => {
   for (const startX of [0,24,376,399,400]) assert.equal(resolveSwipeNavigation(gesture({startX,endX:startX<100?startX+100:startX-100,currentTab:'stock'})),null)

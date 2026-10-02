@@ -1,4 +1,4 @@
-import { createPackagingCheck, extractPackagingFields, normalizePackagingText } from './packaging.js'
+import { createPackagingCheck, extractPackagingFields, normalizePackagingText, getOcrFieldOptions } from './packaging.js'
 /** Inventory rules. Every transition returns a new state and leaves its input untouched. */
 
 export function createEmptyState() {
@@ -194,7 +194,13 @@ export function recordMovement(state, input, meta) {
     const reference = input.referenceFromPackaging
     if (!object(reference) || input.type !== 'in' || product.trackingMode !== 'unique' || reference.confirmedSameBox !== true) throw new Error('照片参考信息仅支持已确认同盒的单件入库')
     const extracted = extractPackagingFields(reference.captures,{expectedName:product.name})
-    if (extracted.name.status !== 'recognized' || normalizePackagingText(extracted.name.value) !== normalizePackagingText(product.name)) throw new Error('照片药品名称未明确识别或与当前商品不一致')
+    const expectedName = normalizePackagingText(product.name)
+    if (extracted.name.candidates.some(value => normalizePackagingText(value) !== expectedName)) throw new Error('照片药品名称未明确识别或与当前商品不一致')
+    const recognizedName = extracted.name.status === 'recognized' && normalizePackagingText(extracted.name.value) === expectedName
+    const confirmedName = reference.confirmedNameCandidate
+    const reviewedName = typeof confirmedName === 'string' && normalizePackagingText(confirmedName) === expectedName &&
+      getOcrFieldOptions(reference.captures).name.some(value => normalizePackagingText(value) === normalizePackagingText(confirmedName))
+    if (!recognizedName && !reviewedName) throw new Error('照片药品名称未明确识别或与当前商品不一致，请人工核对候选药名')
     const fields = {}
     for (const key of ['specification','manufacturer']) {
       const current = product[key] ?? ''

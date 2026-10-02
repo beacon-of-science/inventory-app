@@ -90,12 +90,25 @@ function observeCaptures(copied,expectedName = '') {
   return observed
 }
 
-export function extractPackagingFields(captures, options = {}) {
-  const copied = validateCaptures(captures)
-  const observed = observeCaptures(copied, typeof options.expectedName === 'string' ? options.expectedName : '')
+/** Clean border marks at line edges only; never repair characters within evidence. */
+export function cleanOcrCandidateLine(value) {
+  if (typeof value !== 'string') throw new Error('OCR候选文字格式不正确')
+  let line = value.normalize('NFKC').replace(/【/g, '[').replace(/】/g, ']').trim()
+  if (/^[|丨_\u2500-\u257f\s+-]*$/u.test(line)) return ''
+  let previous
+  do {
+    previous = line
+    line = line.replace(/^[|丨_\u2500-\u257f\s]+|[|丨_\u2500-\u257f\s]+$/gu, '').trim()
+    // A single hyphen belongs to text unless separated by whitespace as decoration.
+    line = line.replace(/^(?:-{2,}\s*|-\s+)|(?:\s*-{2,}|\s+-)$/gu, '').trim()
+  } while (line !== previous)
+  return line
+}
+
+function inferOcrFieldOptions(copied) {
   const inferred = Object.fromEntries(FIELD_KEYS.map(key => [key, []]))
   // Suggestions are deliberately separate from the historical evidence parser.
-  const unsafe = /(?:本品|用于|服用|适用|治疗|说明|注意|请|禁止|应当|建议|每天|每日|每次|一次|一日|用法|用量|适应症|不良反应|禁忌|批准|国药|批号|日期|有效期|生产日期|电话|传真|热线|地址|网址|www\.|https?:|广告|推荐|欢迎|首选|优惠|疗效)/iu
+  const unsafe = /(?:本品|用于|服用|适用|治疗|说明|注意|请|禁止|应当|建议|每天|每日|每次|一次|一日|用法|用量|适应症|不良反应|禁忌|批准|国药|批号|日期|有效期|生产日期|电话|传真|热线|地址|网址|www\.|https?:|广告|推荐|欢迎|首选|优惠|疗效|经销商|经销企业|销售商|上市许可持有人)/iu
   const dosageForm = '(?:肠溶胶囊|软胶囊|胶囊|缓释片|控释片|肠溶片|咀嚼片|分散片|含片|片|颗粒|口服液|口服溶液|口服混悬液|混悬液|注射液|注射用粉针剂|冻干粉针剂|滴眼液|滴鼻液|滴耳液|眼膏|软膏|乳膏|药膏|凝胶|栓剂|滴丸|丸|散剂|散|合剂|糖浆|喷雾剂|气雾剂|吸入剂|洗剂|搽剂|贴剂)'
   const title = new RegExp(`^[\\p{Script=Han}A-Za-z0-9()-]{2,50}${dosageForm}(?:\\([^()]{1,20}\\))?$`, 'u')
   const dose = '(?:[0-9]+(?:\\.[0-9]+)?\\s*(?:μg|ug|mcg|mg|kg|g|mL|ml|L|l|IU|万单位|单位|毫克|微克|克|毫升)(?:\\s*\\/\\s*(?:片|粒|支|袋|瓶|丸|mL|ml))?)'
@@ -103,21 +116,52 @@ export function extractPackagingFields(captures, options = {}) {
   const spec = new RegExp(`^(?:${dose}|${count})(?:\\s*[×xX*]\\s*(?:${dose}|${count}|[0-9]+))*?(?:\\s*\\/\\s*(?:盒|瓶|袋|板|包))?$`, 'u')
   const company = /^[\p{Script=Han}A-Za-z0-9()· -]{2,90}(?:股份有限公司|有限责任公司|有限公司|制药厂|药厂)$/u
   for (const capture of copied) {
-    const lines = capture.text.split(/\r?\n/).map(raw => raw.normalize('NFKC').replace(/【/g,'[').replace(/】/g,']').trim()).filter(Boolean)
+    const lines = capture.text.split(/\r?\n/).map(cleanOcrCandidateLine).filter(Boolean)
     for (let index = 0; index < lines.length; index++) {
-      const line = lines[index]
-      if (unsafe.test(line) || /[:：]/u.test(line)) continue
-      if (index > 0 && (unsafe.test(lines[index - 1]) || /^(?:\[[^\]]+\]\s*:?|[\p{Script=Han}]{2,12}:|经销商|经销企业|销售商|上市许可持有人)$/u.test(lines[index - 1]))) continue
-      if (title.test(line) && /\p{Script=Han}/u.test(line) && !/的/u.test(line)) inferred.name.push(line)
+      let line = lines[index]
+      if (unsafe.test(line)) continue
+      const allLabels = Object.values(LABELS).flat().join('|')
+      const labeled = line.match(new RegExp(`^(?:\\[(${allLabels})\\]\\s*:?\\s*|(${allLabels})(?:\\s*:\\s*|\\s+))(.+)$`))
+      let labeledKey = labeled ? FIELD_KEYS.find(key => LABELS[key].includes(labeled[1] ?? labeled[2])) : null
+      const previousLabel = !labeled && index > 0 ? lines[index - 1].match(new RegExp(`^(?:\\[(${allLabels})\\]|(${allLabels}))\\s*:?\\s*$`)) : null
+      if (previousLabel) labeledKey = FIELD_KEYS.find(key => LABELS[key].includes(previousLabel[1] ?? previousLabel[2]))
+      if (labeled) line = cleanOcrCandidateLine(labeled[3])
+      if (/[:：|丨_\u2500-\u257f\ufffd]/u.test(line) || unsafe.test(line)) continue
+      if (!labeled && index > 0 && (unsafe.test(lines[index - 1]) || (!previousLabel && /^(?:\[[^\]]+\]\s*:?|[\p{Script=Han}]{2,12}:)$/u.test(lines[index - 1])))) continue
+      if ((!labeledKey || labeledKey === 'name') && title.test(line) && /\p{Script=Han}/u.test(line) && !/的/u.test(line)) inferred.name.push(line)
       const unwrapped = /^\([^()]+\)$/.test(line) ? line.slice(1, -1).trim() : line
-      if (unwrapped.length <= 120 && spec.test(unwrapped)) inferred.specification.push(line)
-      if (company.test(line)) inferred.manufacturer.push(line)
+      if ((!labeledKey || labeledKey === 'specification') && unwrapped.length <= 120 && spec.test(unwrapped)) inferred.specification.push(line)
+      if ((!labeledKey || labeledKey === 'manufacturer') && company.test(line)) inferred.manufacturer.push(line)
     }
   }
+  return inferred
+}
+
+/** Field-shaped, cleaned choices for manual review; does not upgrade historical evidence. */
+export function getOcrFieldOptions(captures) {
+  const inferred = inferOcrFieldOptions(validateCaptures(captures))
+  return Object.fromEntries(FIELD_KEYS.map(key => [key,
+    [...new Map(inferred[key].map(value => [normalizePackagingText(value), value])).values()],
+  ]))
+}
+
+function safeExplicitCandidate(value, key) {
+  // Filtering is for form autofill only; historical evidence remains untouched.
+  if (cleanOcrCandidateLine(value) !== value || /[|丨_\u2500-\u257f\ufffd]/u.test(value)) return false
+  if (value.length > (key === 'name' ? 80 : 120)) return false
+  if (/^[\d\s().,+/\-]+$/u.test(value) || /^\d{4}年\d{1,2}月(?:\d{1,2}日)?$/u.test(value)) return false
+  if (/(?:本品|用于|服用|适用|治疗|说明|注意|请|禁止|应当|建议|每天|每日|每次|一次|一日|用法|用量|适应症|不良反应|禁忌|批准|国药|批号|日期|有效期|电话|传真|热线|地址|网址|www\.|https?:|广告|推荐|欢迎|首选|优惠|疗效|经销商|经销企业|销售商|上市许可持有人)/iu.test(value)) return false
+  return true
+}
+
+export function extractPackagingFields(captures, options = {}) {
+  const copied = validateCaptures(captures)
+  const observed = observeCaptures(copied, typeof options.expectedName === 'string' ? options.expectedName : '')
+  const inferred = inferOcrFieldOptions(copied)
   const result = {}
   for (const key of FIELD_KEYS) {
     const unique = values => [...new Map(values.map(value => [normalizePackagingText(value), value])).values()]
-    const explicit = unique(observed[key])
+    const explicit = unique(observed[key].filter(value => safeExplicitCandidate(value, key)))
     const suggestions = unique(inferred[key]).filter(value => !explicit.some(item => normalizePackagingText(item) === normalizePackagingText(value)))
     result[key] = {
       value: explicit.length === 1 ? explicit[0] : '',
