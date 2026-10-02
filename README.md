@@ -1,12 +1,18 @@
-# 简库存 · Android 库存管理 M4
+# 简库存 · Android 库存管理 M4 + 首页精修
 
 一个使用 **Vue 3 + JavaScript + Vant + Capacitor** 开发的本地库存 App。首次打开为空数据，可以从新增商品开始使用。所有页面及资源随 APK 打包，业务不依赖服务器。
 
 ## 手机安装包
 
-[下载 Android APK](https://github.com/beacon-of-science/inventory-app/releases/download/v0.5.0/inventory-app-debug.apk) · [Releases 发布页](https://github.com/beacon-of-science/inventory-app/releases/tag/v0.5.0)
+[下载 Android APK](https://github.com/beacon-of-science/inventory-app/releases/download/v0.5.1/inventory-app-debug.apk) · [Releases 发布页](https://github.com/beacon-of-science/inventory-app/releases/tag/v0.5.1)
 
 这是 Debug 测试版，支持 Android 7.0 及以上。手机安装与使用不需要安装 Node.js；下面的 Node.js 步骤仅用于修改源码和重新打包。
+
+## v0.5.1 首页精修
+
+首页优先展示商品与库存：统计压缩为一行，搜索和扫码同排，分类/低库存筛选按需展开，商品名称与规格字号加大，新增入口放在标题旁，去掉遮挡列表的悬浮按钮和重复占位文案。备份通过页面右上角“备份”入口打开，导入导出与覆盖预览仍保留。示例数据仅用于隔离浏览器验收，不随 APK 安装。M5 尚未开始；本版是 UI 统一阶段的首页第一轮。
+
+自动化核心测试与构建保持通过；手机尺寸浏览器已检查空态、导入、列表、搜索、组合筛选、详情和导航。新首页仍需用户在 Android 手机确认实际显示与触控效果。
 
 ## 已实现
 
