@@ -6,7 +6,7 @@ import {
   recordMovement as recordMovementInState,
   createEmptyState,
 } from '../core/inventory.js'
-import { loadState, saveState } from '../core/storage.js'
+import { loadState, saveState, migrateState, validateState } from '../core/storage.js'
 
 export function createInventoryStore(storage) {
   const state = reactive(createEmptyState())
@@ -45,6 +45,14 @@ export function createInventoryStore(storage) {
     },
     recordMovement(input) {
       return commit(() => recordMovementInState(state, input), 'movement')
+    },
+    importState(input) {
+      return commit(() => {
+        // Own the imported objects so later caller edits cannot bypass persistence.
+        validateState(input)
+        const imported = migrateState(JSON.parse(JSON.stringify(input)))
+        return { state: imported, imported }
+      }, 'imported')
     },
   }
 }

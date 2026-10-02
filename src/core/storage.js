@@ -38,6 +38,14 @@ export function validateState(state) {
     }
     if (ids.has(product.id)) throw new Error('本地商品标识重复')
     ids.add(product.id)
+    if (Object.prototype.hasOwnProperty.call(product, 'category') &&
+        (!validText(product.category, 40) || product.category !== product.category.trim())) {
+      throw new Error('本地商品分类格式不正确')
+    }
+    if (Object.prototype.hasOwnProperty.call(product, 'lowStockThreshold') &&
+        product.lowStockThreshold !== null && !validCount(product.lowStockThreshold)) {
+      throw new Error('本地商品低库存阈值格式不正确')
+    }
     if (Object.prototype.hasOwnProperty.call(product, 'barcode')) {
       const barcode = normalizeBarcode(product.barcode)
       if (barcode !== product.barcode) throw new Error('本地商品条码格式不正确')
@@ -104,13 +112,20 @@ export function loadState(storage) {
   if (envelope.version !== STORAGE_VERSION) {
     throw new Error('本地库存数据版本不受支持，请先备份原数据')
   }
-  const state = validateState(envelope.state)
-  // Existing v1 records have no barcode; migrate in memory without writing on load.
+  return migrateState(envelope.state)
+}
+
+/** Add optional fields to old v1 records, without modifying their source or stock history. */
+export function migrateState(source) {
+  const state = validateState(source)
   return {
     ...state,
-    products: state.products.map((product) => Object.prototype.hasOwnProperty.call(product, 'barcode')
-      ? product
-      : { ...product, barcode: '' }),
+    products: state.products.map((product) => ({
+      ...product,
+      barcode: product.barcode ?? '',
+      category: product.category ?? '',
+      lowStockThreshold: product.lowStockThreshold ?? null,
+    })),
   }
 }
 

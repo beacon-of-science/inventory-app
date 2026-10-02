@@ -28,12 +28,30 @@ function productFields(input, previous) {
     }),
     sku: textField(input.sku, 'SKU', 40, { fallback: previous?.sku ?? '' }),
     barcode: normalizeBarcode(input.barcode === undefined ? previous?.barcode ?? '' : input.barcode),
+    category: textField(input.category, '分类', 40, { fallback: previous?.category ?? '' }),
+    lowStockThreshold: normalizeLowStockThreshold(input.lowStockThreshold === undefined
+      ? previous?.lowStockThreshold ?? null : input.lowStockThreshold),
     unit: textField(input.unit, '单位', 12, {
       required: true,
       fallback: previous?.unit ?? '件',
     }),
     note: textField(input.note, '备注', 300, { fallback: previous?.note ?? '' }),
   }
+}
+
+export function normalizeLowStockThreshold(value) {
+  if (value === null || (typeof value === 'string' && !value.trim())) return null
+  if (typeof value === 'string') {
+    if (!/^[0-9]+$/.test(value.trim())) throw new Error('低库存阈值必须是非负整数，留空可关闭')
+    value = Number(value.trim())
+  }
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error('低库存阈值必须是非负安全整数')
+  return value
+}
+
+export function isLowStock(product) {
+  return Number.isSafeInteger(product.lowStockThreshold) && product.lowStockThreshold >= 0 &&
+    product.stock <= product.lowStockThreshold
 }
 
 /** Optional 1D code text. Never coerce to a number: leading zeroes are significant. */
