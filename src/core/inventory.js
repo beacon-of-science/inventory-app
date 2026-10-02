@@ -1,4 +1,4 @@
-import { createPackagingCheck } from './packaging.js'
+import { createPackagingCheck, extractPackagingFields, normalizePackagingText } from './packaging.js'
 /** Inventory rules. Every transition returns a new state and leaves its input untouched. */
 
 export function createEmptyState() {
@@ -189,11 +189,25 @@ export function recordMovement(state, input, meta) {
   const { id, now } = metadata(meta)
   if (state.movements.some((movement) => movement.id === id)) throw new Error('流水标识已存在')
   if (input.packagingChecks !== undefined && !Array.isArray(input.packagingChecks)) throw new Error('包装核对列表格式不正确')
+  let referenceProduct = product
+  if (input.referenceFromPackaging !== undefined) {
+    const reference = input.referenceFromPackaging
+    if (!object(reference) || input.type !== 'in' || product.trackingMode !== 'unique' || reference.confirmedSameBox !== true) throw new Error('照片参考信息仅支持已确认同盒的单件入库')
+    const extracted = extractPackagingFields(reference.captures)
+    if (extracted.name.status !== 'recognized' || normalizePackagingText(extracted.name.value) !== normalizePackagingText(product.name)) throw new Error('照片药品名称未明确识别或与当前商品不一致')
+    const fields = {}
+    for (const key of ['specification','manufacturer']) {
+      const current = product[key] ?? ''
+      if (current && extracted[key].candidates.some(value => normalizePackagingText(value) !== normalizePackagingText(current))) throw new Error('照片参考信息与现有规格或生产企业不一致')
+      if (!current && extracted[key].status === 'recognized') fields[key] = textField(extracted[key].value, key === 'specification' ? '规格' : '生产企业',120)
+    }
+    referenceProduct = {...product,...fields}
+  }
   const seenChecks = new Set()
   const packagingChecks = (input.packagingChecks ?? []).map(check => {
     if (!object(check) || product.trackingMode !== 'unique' || !preview.codes.includes(check.unitCode) || seenChecks.has(check.unitCode) || (check.productId !== undefined && check.productId !== product.id)) throw new Error('包装核对与商品或单件唯一码不一致')
     seenChecks.add(check.unitCode)
-    const record = createPackagingCheck(product, check.unitCode, check.captures, {confirmedSameBox:check.confirmedSameBox, checkedAt:check.checkedAt ?? now})
+    const record = createPackagingCheck(referenceProduct, check.unitCode, check.captures, {confirmedSameBox:check.confirmedSameBox, checkedAt:check.checkedAt ?? now})
     if (record.status === 'conflict') throw new Error('包装文字存在冲突，不能提交出入库')
     return record
   })
@@ -212,7 +226,7 @@ export function recordMovement(state, input, meta) {
     note,
     createdAt: now,
   }
-  const updatedProduct = { ...product, stock: afterStock, updatedAt: now }
+  const updatedProduct = { ...referenceProduct, stock: afterStock, updatedAt: now }
   return {
     state: {
       ...state, units: [...(state.units ?? []).map(u => preview.codes.includes(u.code) ? {...u, status: input.type, updatedAt: now, ...(checksByCode.has(u.code) ? {packagingCheck:checksByCode.get(u.code)} : {})} : u), ...preview.newCodes.map(code => ({code, productId: product.id, status: 'in', createdAt: now, updatedAt: now, ...(checksByCode.has(code) ? {packagingCheck:checksByCode.get(code)} : {})}))],

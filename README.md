@@ -4,9 +4,19 @@
 
 ## 手机安装包
 
-[下载 Android APK](https://github.com/beacon-of-science/inventory-app/releases/download/v0.5.1/inventory-app-debug.apk) · [Releases 发布页](https://github.com/beacon-of-science/inventory-app/releases/tag/v0.5.1)
+[下载 Android APK](https://github.com/beacon-of-science/inventory-app/releases/download/v0.5.2/inventory-app-debug.apk) · [Releases 发布页](https://github.com/beacon-of-science/inventory-app/releases/tag/v0.5.2)
 
 这是 Debug 测试版，支持 Android 7.0 及以上。手机安装与使用不需要安装 Node.js；下面的 Node.js 步骤仅用于修改源码和重新打包。
+
+## v0.5.2 交互与拍照入库
+
+按钮增加按压反馈，底部导航显示选中背景，页面使用短距离淡入/切换；遵循系统减少动态效果偏好。所有二级面板提供返回入口，Android 返回键先隐藏键盘，再关闭当前面板；库存/记录返回商品首页，首页连续两次返回才移至后台。原生拍摄页面仍先返回入库面板。
+
+药品单件入库会打开包装拍摄，按“拍包装 → 扫当前盒单件码 → 核对提交”操作。名称、规格、厂家从识别原文自动提取，可翻面补拍；识别不明确会提示，绝不凭空补全。当前名称须与选择商品一致，已有规格/厂家不被覆盖；缺失参考资料随成功入库一起保存，取消和写入失败均不修改库存或参考。首盒照片仅关联首个单件码，须操作者确认同盒，其他盒不会自动获得校验通过。入库原文随记录保留，图片仅用于内存识别，不保存照片文件。
+
+新增商品也提供拍包装自动填写，确认商品类型后可保存并继续入库，刚拍的原文会带入，无需再拍同一面。识别后的字段可人工校正。普通数量商品沿用数量入库；OCR 不计算件数。
+
+复测：覆盖安装后，先测试新增/详情/备份/入库中按返回仍在 App；键盘打开时第一下只隐藏键盘。再用一盒药品测试拍照自动填写、翻面补拍、错药拦截、单件绑定与确认入库；取消应不改库存。浏览器模拟拍摄只证明业务界面，Android 返回手势及相机识别仍需手机确认。
 
 ## v0.5.1 首页精修
 

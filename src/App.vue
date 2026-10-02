@@ -1,15 +1,50 @@
 <script setup>
-import { computed, ref, unref, watch } from 'vue'
-import { showToast, showConfirmDialog } from 'vant'
+import { computed, ref, unref, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { showToast, showConfirmDialog, closeDialog } from 'vant'
 import { createInventoryStore } from './store/inventoryStore.js'
 import { scanBarcode, scanInventoryBatch } from './scanner/barcodeScanner.js'
 import { normalizeBarcode, findProductByScan, isLowStock, validateScanBatch, normalizeUnitCode } from './core/inventory.js'
-import { createPackagingCheck } from './core/packaging.js'
+import { createPackagingCheck, extractPackagingFields, normalizePackagingText } from './core/packaging.js'
 import { capturePackagingText } from './ocr/packagingOcr.js'
 import { exportInventory, parseInventoryImport } from './core/dataTransfer.js'
 import { exportInventoryFile, importInventoryFile } from './files/inventoryFiles.js'
 
+import { installAndroidBackHandler, minimizeApp } from './navigation/androidNavigation.js'
+import { chooseBackAction } from './navigation/backNavigation.js'
 const store = createInventoryStore()
+const pageMotion = ref('page-forward')
+const filtersOpen = ref(false)
+const dialogOpen = ref(false)
+let lastRootBack = 0, stopAndroidBack = () => {}
+function navigateTo(next) {
+  if (tab.value === next) return
+  pageMotion.value = ['products','stock','history'].indexOf(next) > ['products','stock','history'].indexOf(tab.value) ? 'page-forward' : 'page-back'
+  tab.value = next; search.value = ''; filtersOpen.value = false; lastRootBack = 0
+  nextTick(() => window.scrollTo({top:0,behavior:'instant'}))
+}
+function handleBack() {
+  const action = chooseBackAction({dialog:dialogOpen.value,importPreview:importSheet.value,
+    busy:scanning.value || batchScanning.value || ocrBusy.value || productOcrBusy.value || submitting.value || transferBusy.value,
+    product:productSheet.value,movement:movementSheet.value,detail:detailSheet.value,unknown:unknownSheet.value,backup:backupSheet.value,
+    filters:filtersOpen.value,search:search.value,tab:tab.value})
+  if (action !== 'root') lastRootBack = 0
+  if (action === 'dialog') closeDialog()
+  else if (action === 'import') cancelImport()
+  else if (action === 'wait') notify('请先完成或取消当前操作')
+  else if (action === 'product') productSheet.value = false
+  else if (action === 'movement') movementSheet.value = false
+  else if (action === 'detail') detailSheet.value = false
+  else if (action === 'unknown') unknownSheet.value = false
+  else if (action === 'backup') backupSheet.value = false
+  else if (action === 'filters') filtersOpen.value = false
+  else if (action === 'search') search.value = ''
+  else if (action === 'home') navigateTo('products')
+  else if (Date.now() - lastRootBack < 2000) { lastRootBack = 0; minimizeApp().catch(error => notify(error.message)) }
+  else { lastRootBack = Date.now(); notify('再按一次返回键退出到后台') }
+}
+function escapeBack(event) { if (event.key === 'Escape') { event.preventDefault(); handleBack() } }
+onMounted(() => { stopAndroidBack = installAndroidBackHandler(handleBack); window.addEventListener('keydown',escapeBack) })
+onUnmounted(() => { stopAndroidBack(); window.removeEventListener('keydown',escapeBack) })
 const tab = ref('products')
 const search = ref('')
 const historyFilter = ref('all')
@@ -40,16 +75,75 @@ const submitting = ref(false)
 const batchScanning = ref(false)
 const ocrBusy = ref(false)
 const ocrUnitCode = ref('')
-const packagingCaptures = ref({})
-const sameBoxConfirmed = ref({})
+const packagingCaptures = ref(Object.create(null))
+const sameBoxConfirmed = ref(Object.create(null))
 const allowIncomplete = ref(false)
+const intakeCaptures = ref([]), intakeUnitCode = ref('')
+const productOcrCaptures = ref([]), productOcrBusy = ref(false)
+const emptyExtraction = () => Object.fromEntries(['name','specification','manufacturer'].map(key => [key,{value:'',status:'missing',candidates:[]}]))
+const intakeFields = computed(() => intakeCaptures.value.length ? extractPackagingFields(intakeCaptures.value) : emptyExtraction())
+const productOcrFields = computed(() => productOcrCaptures.value.length ? extractPackagingFields(productOcrCaptures.value) : emptyExtraction())
+const extractionLabels = {recognized:'已提取',missing:'请补拍',ambiguous:'有多个结果，请重拍'}
+const intakeProblem = computed(() => {
+  if (!intakeCaptures.value.length) return ''
+  if (intakeFields.value.name.status !== 'recognized') return '未提取到明确药名，请拍清药名或通用名称，再翻面补拍。'
+  if (normalizePackagingText(intakeFields.value.name.value) !== normalizePackagingText(movementProduct.value?.name || '')) return '拍到的药名与当前商品不同，请检查是否选错商品或拿错盒。'
+  return ''
+})
+const movementReference = computed(() => {
+  const product = movementProduct.value
+  if (!product || movementForm.value.type !== 'in' || product.trackingMode !== 'unique') return product
+  return {...product,...Object.fromEntries(['specification','manufacturer'].filter(key => !product[key] && intakeFields.value[key].status === 'recognized').map(key => [key,intakeFields.value[key].value]))}
+})
+async function captureProductFace() {
+  if (productOcrBusy.value || scanning.value || productOcrCaptures.value.length >= 6) return
+  productOcrBusy.value = true; formError.value = ''
+  try {
+    const result = await capturePackagingText()
+    if (!result || !productSheet.value) return
+    productOcrCaptures.value.push({id:freshBatchId(),text:result.text,createdAt:new Date().toISOString()})
+    for (const key of ['name','specification','manufacturer']) {
+      const field = productOcrFields.value[key]
+      if (field.status === 'recognized') productForm.value[key] = field.value
+    }
+    notify('已自动填写，请核对')
+  } catch(error) { formError.value = error.message }
+  finally { productOcrBusy.value = false }
+}
+function resetProductOcr() { productOcrCaptures.value = []; formError.value = '' }
+async function captureIntakeFace() {
+  const productId = movementProduct.value?.id, operation = batchId.value
+  if (!movementSheet.value || movementForm.value.type !== 'in' || movementProduct.value?.trackingMode !== 'unique' || ocrBusy.value || batchScanning.value || intakeCaptures.value.length >= 6) return
+  ocrBusy.value = true; movementError.value = ''
+  try {
+    const result = await capturePackagingText()
+    if (!result || !movementSheet.value || movementProduct.value?.id !== productId || batchId.value !== operation) return
+    intakeCaptures.value.push({id:freshBatchId(),text:result.text,createdAt:new Date().toISOString()})
+    bindIntakeToFirstCode()
+    if (intakeUnitCode.value) { packagingCaptures.value[intakeUnitCode.value] = [...intakeCaptures.value]; sameBoxConfirmed.value[intakeUnitCode.value] = false; ocrUnitCode.value = intakeUnitCode.value }
+    allowIncomplete.value = false
+    notify('已提取，可翻面补拍')
+  } catch(error) { movementError.value = error.message }
+  finally { ocrBusy.value = false }
+}
+function bindIntakeToFirstCode() {
+  if (!intakeUnitCode.value && intakeCaptures.value.length && batchCodes.value.length) {
+    intakeUnitCode.value = batchCodes.value[0]; packagingCaptures.value[intakeUnitCode.value] = [...intakeCaptures.value]
+    sameBoxConfirmed.value[intakeUnitCode.value] = false; ocrUnitCode.value = intakeUnitCode.value
+  }
+}
+function resetIntakePhoto() {
+  if (ocrBusy.value) return
+  if (intakeUnitCode.value) { delete packagingCaptures.value[intakeUnitCode.value]; delete sameBoxConfirmed.value[intakeUnitCode.value] }
+  intakeCaptures.value = []; intakeUnitCode.value = ''; allowIncomplete.value = false
+}
 const packagingStatusLabels = { matched: '文字一致', conflict: '信息冲突', incomplete: '未完全核实' }
 const fieldStatusLabels = { matched: '一致', conflict: '冲突', missing: '未核实', unconfigured: '参考信息未配置' }
-const fieldLabels = { name: '药品 / 商品名称', specification: '规格', manufacturer: '厂家' }
+const fieldLabels = { name: '名称', specification: '规格', manufacturer: '厂家' }
 const packagingPreviews = computed(() => {
-  const product = movementProduct.value
+  const product = movementReference.value
   if (!product) return {}
-  const previews = {}
+  const previews = Object.create(null)
   for (const code of batchCodes.value) {
     const captures = packagingCaptures.value[code] || []
     if (!captures.length) continue
@@ -64,14 +158,16 @@ const selectedCaptures = computed(() => packagingCaptures.value[ocrUnitCode.valu
 const selectedPackaging = computed(() => packagingPreviews.value[ocrUnitCode.value])
 function selectOcrUnit(code) { if (!ocrBusy.value) ocrUnitCode.value = code }
 function resetPackagingDraft() {
-  packagingCaptures.value = {}; sameBoxConfirmed.value = {}; ocrUnitCode.value = ''; allowIncomplete.value = false
+  packagingCaptures.value = Object.create(null); sameBoxConfirmed.value = Object.create(null); ocrUnitCode.value = ''; allowIncomplete.value = false; intakeCaptures.value = []; intakeUnitCode.value = ''
 }
 function removePackagingCapture(code, index) {
   if (ocrBusy.value) return
   packagingCaptures.value[code] = (packagingCaptures.value[code] || []).filter((_, i) => i !== index)
+  if (code === intakeUnitCode.value) intakeCaptures.value = [...packagingCaptures.value[code]]
   sameBoxConfirmed.value[code] = false; allowIncomplete.value = false
 }
 async function captureBoxFace() {
+  if (ocrUnitCode.value === intakeUnitCode.value && movementForm.value.type === 'in') return captureIntakeFace()
   const code = ocrUnitCode.value, productId = movementProduct.value?.id, operation = batchId.value
   if (!code || !batchCodes.value.includes(code) || ocrBusy.value || submitting.value) return
   if ((packagingCaptures.value[code] || []).length >= 6) { movementError.value = '每盒最多采集 6 个面，请移除无效面后重拍。'; return }
@@ -90,7 +186,9 @@ async function captureBoxFace() {
 const batchCodes = computed(() => batchCodeText.value.split(/\r?\n/).map(code => code.trim()).filter(Boolean))
 const units = computed(() => store.state.units || [])
 const detailUnits = computed(() => units.value.filter(unit => unit.productId === detailId.value))
+const submittedPreview = ref(null)
 const batchPreview = computed(() => {
+  if (!movementSheet.value && submittedPreview.value) return submittedPreview.value
   if (!movementProduct.value || movementProduct.value.productType === 'unknown') return { error: '请先确认商品类型。' }
   try {
     return validateScanBatch(store.state, {
@@ -105,10 +203,13 @@ watch(batchCodeText, () => {
   bindingConfirmed.value = false; allowIncomplete.value = false
   const retained = new Set(batchCodes.value)
   for (const code of Object.keys(packagingCaptures.value)) if (!retained.has(code)) { delete packagingCaptures.value[code]; delete sameBoxConfirmed.value[code] }
+  if (intakeUnitCode.value && !retained.has(intakeUnitCode.value)) { intakeCaptures.value = []; intakeUnitCode.value = '' }
   if (!retained.has(ocrUnitCode.value)) ocrUnitCode.value = ''
+  bindIntakeToFirstCode()
 })
 function freshBatchId() { return globalThis.crypto?.randomUUID?.() || 'batch-' + Date.now() + '-' + Math.random().toString(36).slice(2) }
 function resetBatch() {
+  submittedPreview.value = null
   resetPackagingDraft()
   batchCodeText.value = ''; bindingConfirmed.value = false; movementMode.value = 'manual'
   movementForm.value.quantity = ''; movementError.value = ''; batchId.value = freshBatchId()
@@ -187,6 +288,7 @@ function notify(message) {
 function openProduct(product, barcode = '') {
   if (storageError.value || transferBusy.value) return
   editingId.value = product?.id || ''
+  productOcrCaptures.value = []
   productForm.value = { productType: product?.productType || 'unknown', trackingMode: product?.trackingMode || 'quantity', specification: product?.specification || '', manufacturer: product?.manufacturer || '', name: product?.name || '', sku: product?.sku || '', barcode: product?.barcode || barcode, category: product?.category || '', lowStockThreshold: product?.lowStockThreshold == null ? '' : String(product.lowStockThreshold), unit: product?.unit || '件', note: product?.note || '' }
   formError.value = ''
   productSheet.value = true
@@ -228,7 +330,7 @@ function addScannedProduct() {
   openProduct(undefined, unknownBarcode.value)
 }
 function saveProduct() {
-  if (storageError.value || scanning.value || transferBusy.value) return
+  if (storageError.value || scanning.value || productOcrBusy.value || transferBusy.value) return
   const input = Object.fromEntries(Object.entries(productForm.value).map(([key, value]) => [key, key === 'barcode' ? value : value.trim()]))
   if (!input.name) { formError.value = '请输入商品名称。'; return }
   if (input.productType === 'unknown') { formError.value = '请人工确认商品类型，条码本身不能判断是否为药品。'; return }
@@ -237,7 +339,17 @@ function saveProduct() {
   input.lowStockThreshold = input.lowStockThreshold === '' ? null : Number(input.lowStockThreshold)
   try {
     if (editingId.value) store.updateProduct(editingId.value, input)
-    else store.addProduct(input)
+    else {
+      const product = store.addProduct(input)
+      if (productOcrCaptures.value.length && input.trackingMode === 'unique') {
+        const photos = [...productOcrCaptures.value]
+        productSheet.value = false
+        openMovement('in',product,false)
+        nextTick(() => { intakeCaptures.value = photos; bindIntakeToFirstCode() })
+        notify('档案已建立，包装文字已带入入库；请扫描当前盒的单件码')
+        return
+      }
+    }
     productSheet.value = false
     notify(editingId.value ? '商品信息已更新' : '商品已添加，可以开始入库了')
   } catch (error) { formError.value = error.message || '保存失败，请重试。' }
@@ -255,27 +367,34 @@ async function removeProduct() {
   const product = detailProduct.value
   if (!product || storageError.value || transferBusy.value || product.stock > 0) return
   try {
+    dialogOpen.value = true
     await showConfirmDialog({ title: '删除商品', message: `确定删除“${product.name}”吗？已有出入库记录会保留。`, confirmButtonText: '确认删除', cancelButtonText: '取消', confirmButtonColor: '#c74c4c' })
-  } catch { return }
+  } catch { return } finally { dialogOpen.value = false }
   try {
     store.deleteProduct(product.id)
     detailSheet.value = false
     notify('商品已删除，历史记录已保留')
   } catch (error) { notify(error.message || '删除失败，请重试。') }
 }
-function openMovement(type, product) {
+function openMovement(type, product, startPhoto = true) {
   if (storageError.value || transferBusy.value || submitting.value || batchScanning.value) return
   movementForm.value = { productId: product?.id || products.value[0]?.id || '', type, quantity: '', note: '' }
   resetBatch()
   detailSheet.value = false
   movementSheet.value = true
+  if (type === 'in' && startPhoto && movementProduct.value?.trackingMode === 'unique') nextTick(() => captureIntakeFace())
 }
 function saveMovement() {
   if (!movementSheet.value || storageError.value || transferBusy.value || submitting.value || batchScanning.value || ocrBusy.value) return
+  movementError.value = ''
   const preview = batchPreview.value
   if (preview.error) { movementError.value = preview.error; return }
   if (preview.requiresBindingConfirmation && !bindingConfirmed.value) {
     movementError.value = '请确认新单件码确实属于当前商品，再提交。'; return
+  }
+  if (movementForm.value.type === 'in' && movementProduct.value.trackingMode === 'unique') {
+    if (!intakeCaptures.value.length) { movementError.value = '请先拍摄本批第一盒包装，自动提取关键信息后再入库。'; return }
+    if (intakeProblem.value) { movementError.value = intakeProblem.value; return }
   }
   const packagingChecks = []
   if (movementProduct.value.trackingMode === 'unique') {
@@ -284,7 +403,7 @@ function saveMovement() {
       if (!captures.length) continue
       if (!sameBoxConfirmed.value[code]) { movementError.value = '请确认单件码 ' + code + ' 的所有照片来自同一盒，再提交。'; return }
       try {
-        const check = createPackagingCheck(movementProduct.value, code, captures, { confirmedSameBox: true })
+        const check = createPackagingCheck(movementReference.value, code, captures, { confirmedSameBox: true })
         if (check.status === 'conflict') { movementError.value = '包装文字存在冲突，请核对当前药盒和参考信息；不能提交。'; return }
         packagingChecks.push(check)
       } catch(error) { movementError.value = error.message; return }
@@ -294,8 +413,9 @@ function saveMovement() {
   submitting.value = true
   try {
     store.recordMovement({ ...movementForm.value, quantity: preview.quantity,
-      packagingChecks, codes: preview.codes, confirmBinding: bindingConfirmed.value, batchId: batchId.value,
+      packagingChecks, ...(movementForm.value.type === 'in' && movementProduct.value.trackingMode === 'unique' ? {referenceFromPackaging:{captures:intakeCaptures.value,confirmedSameBox:true}} : {}), codes: preview.codes, confirmBinding: bindingConfirmed.value, batchId: batchId.value,
       note: movementForm.value.note.trim() })
+    submittedPreview.value = preview
     movementSheet.value = false
     notify(movementForm.value.type === 'in' ? '入库成功，库存、单件状态和记录已一起保存' : '出库成功，库存、单件状态和记录已一起保存')
   } catch (error) { movementError.value = error.message || '记录失败，当前库存未更改。' }
@@ -345,19 +465,19 @@ function confirmImport() {
 <template>
   <div class="app-shell">
     <aside class="desktop-rail">
-      <a class="brand" href="#" @click.prevent="tab = 'products'" aria-label="简库存首页">
+      <a class="brand" href="#" @click.prevent="navigateTo('products')" aria-label="简库存首页">
         <span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" stroke="currentColor" stroke-width="1.7"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9m-4-16.2 8 4.5" stroke="currentColor" stroke-width="1.7"/></svg></span>
         <span>简库存<small>INVENTORY</small></span>
       </a>
       <nav class="rail-nav" aria-label="主导航">
-        <button v-for="item in [{ id: 'products', label: '商品', icon: 'apps-o' }, { id: 'stock', label: '库存', icon: 'orders-o' }, { id: 'history', label: '记录', icon: 'clock-o' }]" :key="item.id" :class="{ active: tab === item.id }" @click="tab = item.id; search = ''" :aria-current="tab === item.id ? 'page' : undefined"><van-icon :name="item.icon" /><span>{{ item.label }}</span></button>
+        <button v-for="item in [{ id: 'products', label: '商品', icon: 'apps-o' }, { id: 'stock', label: '库存', icon: 'orders-o' }, { id: 'history', label: '记录', icon: 'clock-o' }]" :key="item.id" :class="{ active: tab === item.id }" @click="navigateTo(item.id)" :aria-current="tab === item.id ? 'page' : undefined"><van-icon :name="item.icon" /><span>{{ item.label }}</span></button>
       </nav>
       <div class="rail-note"><span class="connection-dot"></span> 本机保存<small>简单记录，安心管理</small></div>
     </aside>
 
     <div class="main-layout">
       <header class="mobile-brand"><span class="mini-mark"><van-icon name="apps-o" /></span><span>简库存</span><button class="backup-entry" aria-label="打开数据备份" @click="backupSheet = true"><van-icon name="shield-o" />备份</button></header>
-      <main class="refined-main">
+      <Transition :name="pageMotion" mode="out-in"><main :key="tab" class="refined-main">
         <div class="page-heading">
           <div><h1>{{ pageTitle }}</h1><p class="page-subtitle">{{ tab === 'products' ? '管理商品，随时掌握库存' : pageDescription }}</p></div><button class="backup-entry desktop-backup" aria-label="打开数据备份" @click="backupSheet = true"><van-icon name="shield-o" />数据备份</button>
           <button v-if="tab === 'products' && products.length" class="button button-primary desktop-add" :disabled="!!storageError || transferBusy" @click="openProduct()"><van-icon name="plus" />新增商品</button>
@@ -369,7 +489,7 @@ function confirmImport() {
         <section v-if="tab !== 'history' && products.length" class="inventory-strip" aria-label="库存概览"><div><span>商品</span><strong>{{ products.length }}</strong><small>种</small></div><div><span>有库存</span><strong>{{ inStockCount }}</strong><small>种</small></div><button :class="{ warning: lowStockCount, active: lowStockOnly }" :aria-pressed="lowStockOnly" aria-label="切换低库存筛选" @click="lowStockOnly = !lowStockOnly"><span>低库存</span><strong>{{ lowStockCount }}</strong><small>种</small><van-icon name="arrow" /></button></section>
         <section v-if="tab === 'products' || tab === 'stock'" class="content-panel">
           <div class="panel-toolbar"><h2>{{ tab === 'products' ? '商品列表' : '库存清单' }}<span>{{ filteredProducts.length }}</span></h2><div class="lookup-tools"><button class="button button-secondary scan-lookup" :disabled="scanning || !!storageError || transferBusy" :aria-busy="scanning" aria-label="扫码查找商品" @click="startScan()"><van-icon name="scan" />{{ scanning ? '扫码中…' : '扫码' }}</button><div v-if="products.length" class="search-field"><van-icon name="search" /><input v-model="search" type="search" aria-label="搜索商品名称、编号、条码或分类" placeholder="搜索商品、编号或条码" /><button v-if="search" class="search-clear" aria-label="清空搜索" @click="search = ''"><van-icon name="cross" /></button></div></div></div>
-          <details v-if="products.length" class="catalog-filter-drawer"><summary><van-icon name="filter-o" />筛选<span>{{ categoryFilter === 'all' ? '全部分类' : categoryFilter === 'uncategorized' ? '未分类' : categoryFilter.slice(9) }}{{ lowStockOnly ? ' · 低库存' : '' }}</span><van-icon name="arrow-down" /></summary><div class="catalog-filters"><label>分类<select v-model="categoryFilter" aria-label="筛选商品分类"><option value="all">全部分类</option><option value="uncategorized">未分类</option><option v-for="category in categories" :key="category" :value="'category:' + category">{{ category }}</option></select></label><label class="low-stock-toggle"><input v-model="lowStockOnly" type="checkbox" />只看低库存</label><button v-if="search || categoryFilter !== 'all' || lowStockOnly" class="text-button" @click="resetFilters">重置筛选</button></div></details>
+          <details v-if="products.length" class="catalog-filter-drawer" :open="filtersOpen" @toggle="filtersOpen = $event.target.open"><summary><van-icon name="filter-o" />筛选<span>{{ categoryFilter === 'all' ? '全部分类' : categoryFilter === 'uncategorized' ? '未分类' : categoryFilter.slice(9) }}{{ lowStockOnly ? ' · 低库存' : '' }}</span><van-icon name="arrow-down" /></summary><div class="catalog-filters"><label>分类<select v-model="categoryFilter" aria-label="筛选商品分类"><option value="all">全部分类</option><option value="uncategorized">未分类</option><option v-for="category in categories" :key="category" :value="'category:' + category">{{ category }}</option></select></label><label class="low-stock-toggle"><input v-model="lowStockOnly" type="checkbox" />只看低库存</label><button v-if="search || categoryFilter !== 'all' || lowStockOnly" class="text-button" @click="resetFilters">重置筛选</button></div></details>
           <div v-if="!products.length" class="empty-state"><div class="empty-illustration"><svg viewBox="0 0 100 100" fill="none" aria-hidden="true"><rect x="17" y="33" width="66" height="49" rx="9" fill="#e8f2f3"/><path d="M19 36 50 20l31 16-31 17-31-17Z" fill="#d0e6e7"/><path d="M50 53v28M34 29l31 17" stroke="#7baeb0" stroke-width="2"/><rect x="60" y="64" width="25" height="25" rx="12.5" fill="#1d8a7a"/><path d="M72.5 70v13m-6.5-6.5h13" stroke="white" stroke-width="2" stroke-linecap="round"/></svg></div><h3>从第一件商品开始</h3><p>添加商品信息，再记录入库数量。<br />商品和库存变化会保存在这台设备上。</p><button class="button button-primary" :disabled="!!storageError || transferBusy" @click="openProduct()"><van-icon name="plus" />添加第一件商品</button></div>
           <div v-else-if="!filteredProducts.length" class="empty-state compact"><van-icon name="search" class="empty-icon" /><h3>没有找到相关商品</h3><p>调整搜索、分类或低库存筛选试试。</p><button class="text-button" @click="resetFilters">重置筛选</button></div>
           <div v-else class="product-list">
@@ -385,39 +505,39 @@ function confirmImport() {
 
         <section v-if="tab === 'history'" class="content-panel history-panel">
           <div class="panel-toolbar"><h2>历史记录<span>{{ movements.length }}</span></h2><div class="filter-group" aria-label="筛选出入库类型"><button v-for="item in [{ id: 'all', name: '全部' }, { id: 'in', name: '入库' }, { id: 'out', name: '出库' }]" :key="item.id" :class="{ active: historyFilter === item.id }" @click="historyFilter = item.id" :aria-pressed="historyFilter === item.id">{{ item.name }}</button></div></div>
-          <div v-if="!filteredMovements.length" class="empty-state"><div class="empty-icon-wrap"><van-icon name="clock-o" /></div><h3>{{ movements.length ? '暂无此类记录' : '还没有出入库记录' }}</h3><p>{{ movements.length ? '切换筛选，查看其他库存变化。' : '完成一次入库或出库后，记录会显示在这里。' }}</p><button v-if="!movements.length" class="button button-secondary" @click="tab = 'stock'">前往库存</button></div>
+          <div v-if="!filteredMovements.length" class="empty-state"><div class="empty-icon-wrap"><van-icon name="clock-o" /></div><h3>{{ movements.length ? '暂无此类记录' : '还没有出入库记录' }}</h3><p>{{ movements.length ? '切换筛选，查看其他库存变化。' : '完成一次入库或出库后，记录会显示在这里。' }}</p><button v-if="!movements.length" class="button button-secondary" @click="navigateTo('stock')">前往库存</button></div>
           <div v-else class="history-list"><article v-for="movement in filteredMovements" :key="movement.id" class="history-row"><span class="movement-icon" :class="movement.type"><van-icon :name="movement.type === 'in' ? 'down' : 'up'" /></span><div class="movement-content"><div class="movement-title"><strong>{{ movement.productName }}</strong><span class="movement-tag" :class="movement.type">{{ movement.type === 'in' ? '入库' : '出库' }}</span></div><p class="movement-meta">{{ formatDate(movement.createdAt, true) }}<span v-if="movement.productSku"> · {{ movement.productSku }}</span></p><p v-if="movement.note" class="movement-note">{{ movement.note }}</p><p class="stock-change">库存 {{ movement.beforeStock }} → {{ movement.afterStock }} {{ movement.unit }}</p><p v-if="movement.codes?.length" class="movement-meta">本次包装文字一致 {{ (movement.packagingChecks || []).filter(check => check.status === 'matched').length }} / {{ movement.codes.length }} 件<span v-if="(movement.packagingChecks || []).filter(check => check.status === 'matched').length < movement.codes.length">，其余未完全核实</span></p><details v-if="movement.packagingChecks?.length" class="history-codes"><summary>查看本次包装校验</summary><div v-for="check in movement.packagingChecks" :key="check.unitCode"><p>{{ check.unitCode }} · {{ packagingStatusLabels[check.status] }}</p><p>参考：{{ check.expected.name }} / {{ check.expected.specification }} / {{ check.expected.manufacturer }}</p><p v-for="capture in check.captures" :key="capture.id">{{ capture.text }}</p></div></details><details v-if="movement.codes?.length" class="history-codes"><summary>查看 {{ movement.codes.length }} 个单件码</summary><p v-for="code in movement.codes" :key="code">{{ code }}</p></details></div><div class="movement-quantity" :class="movement.type"><strong>{{ movement.type === 'in' ? '+' : '−' }}{{ movement.quantity.toLocaleString('zh-CN') }}</strong><span>{{ movement.unit }}</span></div></article></div>
         </section>
 
         <footer class="data-footer"><van-icon name="shield-o" /><p>本机保存 · 随时可备份</p></footer>
         <div class="screen-reader-only" role="status" aria-live="polite">{{ status }}</div>
-      </main>
+      </main></Transition>
     </div>
 
 
-    <van-popup v-model:show="backupSheet" position="bottom" round closeable :close-on-click-overlay="!transferBusy" :closeable="!transferBusy" class="sheet-popup backup-popup" aria-label="数据备份"><header class="sheet-header"><h2>数据备份</h2><p>把商品、库存和完整记录保存到文件。</p></header><div class="backup-body"><section class="transfer-bar" aria-label="数据导入导出"><div><strong>数据导入 / 导出</strong><span>JSON 文件 · 商品与完整流水</span></div><div class="transfer-actions"><button class="button button-secondary" :disabled="!!storageError || scanning || transferBusy" @click="exportData">导出 JSON</button><button class="button button-secondary" :disabled="!!storageError || scanning || transferBusy" @click="prepareImport">导入 JSON</button></div><p v-if="transferBusy" role="status">{{ importSheet ? '请确认或取消导入' : '正在处理文件…' }}</p></section><p class="backup-notice"><van-icon name="info-o" />数据只保存在这台设备。卸载或清除应用数据前，请先导出备份；导入文件会替换当前数据，确认前可以预览。</p></div></van-popup>
-    <nav class="bottom-nav" aria-label="底部导航"><button v-for="item in [{ id: 'products', label: '商品', icon: 'apps-o' }, { id: 'stock', label: '库存', icon: 'orders-o' }, { id: 'history', label: '记录', icon: 'clock-o' }]" :key="item.id" :class="{ active: tab === item.id }" @click="tab = item.id; search = ''" :aria-current="tab === item.id ? 'page' : undefined"><van-icon :name="item.icon" /><span>{{ item.label }}</span></button></nav>
+    <van-popup v-model:show="backupSheet" position="bottom" round closeable :close-on-click-overlay="!transferBusy" :closeable="!transferBusy" class="sheet-popup backup-popup" aria-label="数据备份"><header class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><h2>数据备份</h2><p>把商品、库存和完整记录保存到文件。</p></header><div class="backup-body"><section class="transfer-bar" aria-label="数据导入导出"><div><strong>数据导入 / 导出</strong><span>JSON 文件 · 商品与完整流水</span></div><div class="transfer-actions"><button class="button button-secondary" :disabled="!!storageError || scanning || transferBusy" @click="exportData">导出 JSON</button><button class="button button-secondary" :disabled="!!storageError || scanning || transferBusy" @click="prepareImport">导入 JSON</button></div><p v-if="transferBusy" role="status">{{ importSheet ? '请确认或取消导入' : '正在处理文件…' }}</p></section><p class="backup-notice"><van-icon name="info-o" />数据只保存在这台设备。卸载或清除应用数据前，请先导出备份；导入文件会替换当前数据，确认前可以预览。</p></div></van-popup>
+    <nav class="bottom-nav" aria-label="底部导航"><button v-for="item in [{ id: 'products', label: '商品', icon: 'apps-o' }, { id: 'stock', label: '库存', icon: 'orders-o' }, { id: 'history', label: '记录', icon: 'clock-o' }]" :key="item.id" :class="{ active: tab === item.id }" @click="navigateTo(item.id)" :aria-current="tab === item.id ? 'page' : undefined"><van-icon :name="item.icon" /><span>{{ item.label }}</span></button></nav>
 
-    <van-popup v-model:show="productSheet" position="bottom" round closeable class="sheet-popup" :close-on-click-overlay="false" aria-label="商品信息表单">
-      <div class="sheet-header"><span class="sheet-kicker">PRODUCT DETAILS</span><h2>{{ editingId ? '编辑商品' : '新增商品' }}</h2><p>{{ editingId ? '更新商品资料，库存数量保持不变。' : '先建立商品档案，初始库存为 0。' }}</p></div>
-      <form class="sheet-form" @submit.prevent="saveProduct">
+    <van-popup v-model:show="productSheet" position="bottom" round :closeable="!productOcrBusy && !scanning" class="sheet-popup" :close-on-click-overlay="false" aria-label="商品信息表单">
+      <div class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><span class="sheet-kicker">PRODUCT DETAILS</span><h2>{{ editingId ? '编辑商品' : '新增商品' }}</h2><p>{{ editingId ? '更新商品资料，库存数量保持不变。' : '先建立商品档案，初始库存为 0。' }}</p></div>
+      <form class="sheet-form" @submit.prevent="saveProduct"><section class="product-photo-card" aria-label="包装信息自动填写"><h3>拍包装，自动填写商品信息</h3><p>拍清药名、规格和厂家，可翻面补拍。结果自动填到下面，请核对后保存。</p><button type="button" class="button button-primary" @click="captureProductFace" :disabled="productOcrBusy || scanning || productOcrCaptures.length >= 6" :aria-busy="productOcrBusy"><van-icon name="photograph" />{{ productOcrBusy ? '正在识别…' : productOcrCaptures.length ? '翻面补拍信息' : '拍摄包装' }}</button><div v-if="productOcrCaptures.length" class="extracted-fields"><div v-for="(field,key) in productOcrFields" :key="key"><span>{{ fieldLabels[key] }}</span><strong>{{ field.value || extractionLabels[field.status] }}</strong></div></div><button v-if="productOcrCaptures.length" type="button" class="text-button" :disabled="productOcrBusy" @click="resetProductOcr">清除识别原文后重拍</button></section><fieldset class="movement-fields" :disabled="productOcrBusy || scanning">
         <label class="form-field"><span>商品名称 <em>*</em></span><input v-model="productForm.name" name="product-name" placeholder="例如：纯棉短袖 T 恤" maxlength="80" autocomplete="off" required /><small>{{ productForm.name.length }}/80</small></label>
         <div class="form-grid"><label class="form-field"><span>商品编号</span><input v-model="productForm.sku" name="product-sku" placeholder="选填，例如 SKU001" maxlength="40" autocomplete="off" /></label><label class="form-field"><span>计量单位 <em>*</em></span><input v-model="productForm.unit" name="product-unit" placeholder="例如：件" maxlength="12" required /></label></div>
         <div class="form-field"><label for="product-barcode" class="barcode-label">商品条码</label><div class="barcode-input"><input id="product-barcode" v-model="productForm.barcode" name="product-barcode" type="text" placeholder="选填，扫描或手动输入" maxlength="80" autocomplete="off" :disabled="scanning" /><button type="button" class="button button-secondary" :disabled="scanning || !!storageError || transferBusy" :aria-busy="scanning" aria-label="扫码填写商品条码" @click="startScan('form')"><van-icon name="scan" />{{ scanning ? '扫码中' : '扫码' }}</button></div><small class="barcode-help">条码与商品编号分别保存，支持前导 0。{{ productForm.barcode.length }}/80</small></div>
-        <label class="form-field"><span>包装规格（OCR 参考）</span><input v-model="productForm.specification" name="product-specification" maxlength="120" placeholder="例如 0.25g×24粒" /><small class="barcode-help">按包装完整填写；数字、单位不同应视为冲突。</small></label>
-        <label class="form-field"><span>生产厂家（OCR 参考）</span><input v-model="productForm.manufacturer" name="product-manufacturer" maxlength="120" placeholder="按包装填写完整企业名称" /><small class="barcode-help">未填写参考信息的字段无法核实一致。</small></label>
+        <label class="form-field"><span>包装规格（自动提取，可校正）</span><input v-model="productForm.specification" name="product-specification" maxlength="120" placeholder="例如 0.25g×24粒" /><small class="barcode-help">按包装完整填写；数字、单位不同应视为冲突。</small></label>
+        <label class="form-field"><span>生产厂家（自动提取，可校正）</span><input v-model="productForm.manufacturer" name="product-manufacturer" maxlength="120" placeholder="按包装填写完整企业名称" /><small class="barcode-help">拍摄后自动填写；没有识别到时请翻面补拍。</small></label>
         <label class="form-field"><span>商品类型 <em>*</em></span><select v-model="productForm.productType" name="product-type" @change="setProductType"><option value="unknown" disabled>请人工确认商品类型</option><option value="ordinary">普通商品</option><option value="medicine">药品（每盒唯一追踪）</option></select><small class="barcode-help">条码本身不能判断是否为药品，请根据实际包装选择。</small></label>
         <label class="form-field"><span>库存管理方式</span><select v-model="productForm.trackingMode" name="product-tracking" :disabled="productForm.productType === 'medicine'"><option value="quantity">仅管理数量</option><option value="unique">每件唯一身份</option></select><small class="barcode-help">药品使用唯一单件码。切换管理方式须库存为 0 且尚未建立单件档案。</small></label>
         <label class="form-field"><span>商品分类</span><input v-model="productForm.category" name="product-category" maxlength="40" placeholder="选填，例如药品、耗材" list="category-suggestions" /><datalist id="category-suggestions"><option v-for="category in categories" :key="category" :value="category" /></datalist></label>
         <label class="form-field"><span>低库存阈值</span><input v-model="productForm.lowStockThreshold" name="product-threshold" type="text" inputmode="numeric" placeholder="留空关闭提醒，例如 5" /><small class="barcode-help">库存小于或等于阈值时提醒；0 表示仅在缺货时提醒。</small></label>
         <label class="form-field"><span>备注</span><textarea v-model="productForm.note" name="product-note" placeholder="选填，记录规格或其他说明" maxlength="300" rows="3"></textarea><small>{{ productForm.note.length }}/300</small></label>
         <p v-if="formError" class="form-error" role="alert"><van-icon name="warning-o" />{{ formError }}</p>
-        <div class="form-actions"><button type="button" class="button button-secondary" @click="productSheet = false">取消</button><button type="submit" class="button button-primary" :disabled="!!storageError || scanning">{{ editingId ? '保存修改' : '保存商品' }}</button></div>
+        <div class="form-actions"><button type="button" class="button button-secondary" @click="productSheet = false">取消</button><button type="submit" class="button button-primary" :disabled="!!storageError || scanning">{{ editingId ? '保存修改' : productOcrCaptures.length && productForm.trackingMode === 'unique' ? '保存并继续入库' : '保存商品' }}</button></div></fieldset>
       </form>
     </van-popup>
 
     <van-popup v-model:show="movementSheet" position="bottom" round :closeable="!batchScanning && !submitting && !ocrBusy" class="sheet-popup" :close-on-click-overlay="false" aria-label="出入库表单">
-      <div class="sheet-header"><span class="sheet-kicker">SCAN & CONFIRM</span><h2>记录{{ movementForm.type === 'in' ? '入库' : '出库' }}</h2><p>扫描只填写待提交清单，确认后才保存库存与流水。</p></div>
+      <div class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><span class="sheet-kicker">{{ movementForm.type === 'in' ? '拍包装 → 扫单件码 → 确认入库' : '选单件 → 核对 → 确认出库' }}</span><h2>记录{{ movementForm.type === 'in' ? '入库' : '出库' }}</h2><p>药品入库先拍当前盒包装，信息自动提取；确认提交后才改变库存。</p></div>
       <form class="sheet-form" @submit.prevent="saveMovement">
         <fieldset :disabled="batchScanning || submitting || ocrBusy" class="movement-fields">
         <div class="movement-switch" aria-label="出入库类型"><button type="button" :class="{ active: movementForm.type === 'in' }" @click="movementForm.type = 'in'" :aria-pressed="movementForm.type === 'in'">入库 / 回库</button><button type="button" :class="{ active: movementForm.type === 'out' }" @click="movementForm.type = 'out'" :aria-pressed="movementForm.type === 'out'">出库</button></div>
@@ -431,14 +551,15 @@ function confirmImport() {
             <label class="form-field"><span>待确认{{ movementForm.type === 'in' ? '入库' : '出库' }}数量 <em>*</em></span><div class="quantity-input"><input v-model="movementForm.quantity" name="movement-quantity" type="number" inputmode="numeric" min="1" step="1" placeholder="核对实物后填写正整数" required /><span>{{ movementProduct.unit }}</span></div></label>
           </template>
           <template v-else>
+            <section v-if="movementForm.type === 'in'" class="intake-photo" aria-label="入库拍照提取信息"><h3><span>1</span>拍当前盒包装</h3><p>对准药名、规格和厂家，自动记录文字；不同面可补拍，不需要逐项录入。先完成这一盒，再扫描它的单件码。</p><button type="button" class="button button-primary" @click="captureIntakeFace" :disabled="intakeCaptures.length >= 6"><van-icon name="photograph" />{{ intakeCaptures.length ? '翻面补拍关键信息' : '拍包装，自动提取' }}</button><div v-if="intakeCaptures.length" class="extracted-fields"><div v-for="(field,key) in intakeFields" :key="key"><span>{{ fieldLabels[key] }}</span><strong>{{ field.value || extractionLabels[field.status] }}</strong><small :class="field.status">{{ extractionLabels[field.status] }}</small></div></div><p v-if="intakeProblem" class="form-error">{{ intakeProblem }}</p><p v-if="intakeUnitCode" class="batch-help">本次照片对应：{{ intakeUnitCode }}。其他盒需分别补拍，未拍不会记为已核实。</p><details v-if="intakeCaptures.length" class="intake-original"><summary>查看拍摄原文 · {{ intakeCaptures.length }} 面</summary><p v-for="capture in intakeCaptures" :key="capture.id">{{ capture.text }}</p></details><button v-if="intakeCaptures.length" type="button" class="text-button" @click="resetIntakePhoto">清除本盒照片文字并重新拍摄</button></section><h3 class="flow-step"><span>{{ movementForm.type === 'in' ? '2' : '1' }}</span>{{ movementForm.type === 'in' ? '扫描当前盒单件码' : '选择在库单件码' }}</h3>
             <div class="scan-mode-note"><p>每个唯一单件码对应一件实物。已在库码不能再次入库；已出库码可回库；出库只接受当前商品的在库码。</p><button type="button" class="button button-secondary" @click="scanMovementBatch">连续扫描单件码</button></div>
             <label class="form-field"><span>待提交单件码（每行一个）</span><textarea v-model="batchCodeText" name="movement-codes" rows="4" placeholder="扫描或逐行输入追溯码 / 实例码，保留前导零" spellcheck="false"></textarea><small class="barcode-help">本地唯一性不能验证药品真伪，也不能自动证明该码属于当前商品。</small></label>
             <button v-if="movementProduct.productType !== 'medicine' && movementForm.type === 'in'" type="button" class="text-button" @click="generateLocalCode">为当前实物生成本地实例码</button>
             <p v-if="movementProduct.productType !== 'medicine'" class="batch-help">生成的 LOCAL 码需自行贴到对应实物上保存；不是药品追溯码。</p>
             <div v-if="batchCodes.length" class="pending-codes"><strong>待提交 {{ batchCodes.length }} 件</strong><div v-for="(code, index) in batchCodes" :key="index"><code>{{ code }}</code><button type="button" class="ocr-unit-button" @click="selectOcrUnit(code)">{{ packagingStatusLabels[packagingPreviews[code]?.status] || '未核实' }} · 翻面 OCR</button><button type="button" :aria-label="'移除单件码 ' + code" @click="removeBatchCode(index)">移除</button></div></div>
             <section v-if="ocrUnitCode && batchCodes.includes(ocrUnitCode)" class="ocr-panel" aria-label="当前单件多面 OCR 校验">
-              <h3>当前这一盒 · 翻面 OCR</h3><p class="ocr-current-code">{{ ocrUnitCode }}</p><p>保持同一盒，拍清名称、规格和厂家；它们可以分布在不同面。完成当前盒后，再选择下一件。</p>
-              <div class="ocr-reference"><strong>参考信息</strong><span>名称：{{ movementProduct.name }}</span><span>规格：{{ movementProduct.specification || '未配置' }}</span><span>厂家：{{ movementProduct.manufacturer || '未配置' }}</span></div>
+              <h3 class="flow-step"><span>{{ movementForm.type === 'in' ? '3' : '2' }}</span>核对当前这一盒</h3><p class="ocr-current-code">{{ ocrUnitCode }}</p><p>保持同一盒，拍清名称、规格和厂家；它们可以分布在不同面。完成当前盒后，再选择下一件。</p>
+              <div class="ocr-reference"><strong>参考信息</strong><span>名称：{{ movementProduct.name }}</span><span>规格：{{ movementReference.specification || '请翻面补拍' }}</span><span>厂家：{{ movementReference.manufacturer || '请翻面补拍' }}</span></div>
               <button type="button" class="button button-secondary" @click="captureBoxFace">{{ selectedCaptures.length ? '翻面并补拍文字' : '拍摄包装文字' }}</button>
               <article v-for="(capture, index) in selectedCaptures" :key="capture.id" class="ocr-capture"><strong>第 {{ index + 1 }} 面</strong><pre>{{ capture.text }}</pre><button type="button" class="text-button" @click="removePackagingCapture(ocrUnitCode, index)">移除这一面，重新拍摄</button></article>
               <div v-if="selectedPackaging && !selectedPackaging.error" class="ocr-fields"><div v-for="(field, key) in selectedPackaging.fields" :key="key"><strong>{{ fieldLabels[key] }}</strong><span :class="field.status">{{ fieldStatusLabels[field.status] }}</span><small v-if="field.observed?.length">识别：{{ field.observed.join(' / ') }}</small></div><p :class="selectedPackaging.status">{{ packagingStatusLabels[selectedPackaging.status] }}。未识别的字段不能当作一致，信息冲突时禁止提交。</p></div>
@@ -458,14 +579,14 @@ function confirmImport() {
       </form>
     </van-popup>
 
-    <van-popup v-model:show="importSheet" position="bottom" round closeable class="sheet-popup" aria-label="确认导入库存数据" @closed="cancelImport"><div class="sheet-header"><span class="sheet-kicker">IMPORT JSON</span><h2>确认覆盖当前数据</h2><p>导入会替换本机全部商品和出入库记录，不会与当前数据合并。请先导出当前数据留存。</p></div><div v-if="importPreview" class="detail-body"><div class="import-counts"><div><span>将导入</span><strong>{{ importPreview.products.length }} 种商品 · {{ importPreview.movements.length }} 笔记录 · {{ importPreview.units?.length || 0 }} 个单件档案</strong></div><div><span>当前本机</span><strong>{{ products.length }} 种商品 · {{ movements.length }} 笔记录</strong></div></div><p class="import-warning">确认后当前数据将被完整替换；取消不会更改任何记录。</p><div class="form-actions"><button class="button button-secondary" @click="cancelImport">取消导入</button><button class="button button-danger" :disabled="!!storageError" @click="confirmImport">确认覆盖并导入</button></div></div></van-popup>
+    <van-popup v-model:show="importSheet" position="bottom" round closeable class="sheet-popup" aria-label="确认导入库存数据" @closed="cancelImport"><div class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><span class="sheet-kicker">IMPORT JSON</span><h2>确认覆盖当前数据</h2><p>导入会替换本机全部商品和出入库记录，不会与当前数据合并。请先导出当前数据留存。</p></div><div v-if="importPreview" class="detail-body"><div class="import-counts"><div><span>将导入</span><strong>{{ importPreview.products.length }} 种商品 · {{ importPreview.movements.length }} 笔记录 · {{ importPreview.units?.length || 0 }} 个单件档案</strong></div><div><span>当前本机</span><strong>{{ products.length }} 种商品 · {{ movements.length }} 笔记录</strong></div></div><p class="import-warning">确认后当前数据将被完整替换；取消不会更改任何记录。</p><div class="form-actions"><button class="button button-secondary" @click="cancelImport">取消导入</button><button class="button button-danger" :disabled="!!storageError" @click="confirmImport">确认覆盖并导入</button></div></div></van-popup>
     <van-popup v-model:show="unknownSheet" position="bottom" round closeable class="sheet-popup" aria-label="未找到条码对应商品">
-      <div class="sheet-header"><span class="sheet-kicker">BARCODE LOOKUP</span><h2>尚未登记这个条码</h2><p>本机商品中没有对应条码。你可以建立商品档案，库存不会自动变化。已有商品请取消后打开商品详情，在编辑中绑定条码。</p></div>
+      <div class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><span class="sheet-kicker">BARCODE LOOKUP</span><h2>尚未登记这个条码</h2><p>本机商品中没有对应条码。你可以建立商品档案，库存不会自动变化。已有商品请取消后打开商品详情，在编辑中绑定条码。</p></div>
       <div class="detail-body"><div class="unknown-barcode"><span>扫描结果</span><strong>{{ unknownBarcode }}</strong></div><div class="form-actions"><button type="button" class="button button-secondary" @click="unknownSheet = false">取消</button><button type="button" class="button button-primary" :disabled="!!storageError || transferBusy" @click="addScannedProduct">新增商品并填入条码</button></div></div>
     </van-popup>
 
     <van-popup v-model:show="detailSheet" position="bottom" round closeable class="sheet-popup detail-popup" aria-label="商品详情">
-      <template v-if="detailProduct"><div class="sheet-header"><span class="sheet-kicker">PRODUCT DETAILS</span><h2>商品详情</h2></div><div class="detail-body"><div class="detail-product"><span class="product-avatar large">{{ detailProduct.name.slice(0, 1) }}</span><div><h3>{{ detailProduct.name }}</h3><p>{{ detailProduct.sku ? `编号 ${detailProduct.sku}` : '未设置商品编号' }}</p></div></div><div class="detail-stock"><span>当前库存</span><strong>{{ detailProduct.stock.toLocaleString('zh-CN') }}<small>{{ detailProduct.unit }}</small></strong><div class="detail-stock-actions"><button class="button button-secondary" :disabled="!!storageError || transferBusy || detailProduct.stock === 0" @click="openMovement('out', detailProduct)">出库</button><button class="button button-primary" :disabled="!!storageError || transferBusy" @click="openMovement('in', detailProduct)">入库</button></div></div><dl class="detail-meta"><div><dt>包装规格</dt><dd>{{ detailProduct.specification || '未配置 OCR 参考' }}</dd></div><div><dt>生产厂家</dt><dd>{{ detailProduct.manufacturer || '未配置 OCR 参考' }}</dd></div><div><dt>商品类型</dt><dd>{{ productTypeLabel(detailProduct) }} · {{ detailProduct.trackingMode === 'unique' ? '每件唯一身份' : '仅管理数量' }}</dd></div><div><dt>分类</dt><dd>{{ detailProduct.category || '未分类' }}</dd></div><div><dt>低库存阈值</dt><dd>{{ detailProduct.lowStockThreshold == null ? '提醒关闭' : detailProduct.lowStockThreshold + ' ' + detailProduct.unit }}<span v-if="isLowStock(detailProduct)" class="low-stock-badge"> · 当前低库存</span></dd></div><div><dt>商品条码</dt><dd class="barcode-value">{{ detailProduct.barcode || '未设置条码' }}</dd></div><div><dt>备注</dt><dd>{{ detailProduct.note || '暂无备注' }}</dd></div><div><dt>创建时间</dt><dd>{{ formatDate(detailProduct.createdAt, true) }}</dd></div><div><dt>更新时间</dt><dd>{{ formatDate(detailProduct.updatedAt, true) }}</dd></div></dl><section v-if="detailProduct.trackingMode === 'unique'" class="unit-ledger"><h3>单件档案</h3><p>在库 {{ detailUnits.filter(unit => unit.status === 'in').length }} 件 · 已出库 {{ detailUnits.filter(unit => unit.status === 'out').length }} 件</p><div v-for="unit in detailUnits" :key="unit.code"><code>{{ unit.code }}</code><span :class="unit.status">{{ unit.status === 'in' ? '在库' : '已出库' }}</span><details v-if="unit.packagingCheck" class="unit-packaging"><summary>上次包装校验：{{ packagingStatusLabels[unit.packagingCheck.status] }}</summary><p>{{ formatDate(unit.packagingCheck.checkedAt, true) }} · 按当时参考信息校验</p><div v-for="(field, key) in unit.packagingCheck.fields" :key="key">{{ fieldLabels[key] }}：{{ fieldStatusLabels[field.status] }}</div><p v-for="capture in unit.packagingCheck.captures" :key="capture.id">{{ capture.text }}</p></details><small v-else class="unit-packaging">包装文字未核实</small></div><p v-if="!detailUnits.length">尚未登记单件码。</p></section><div class="detail-bottom-actions"><button class="button button-secondary" :disabled="!!storageError || transferBusy" @click="editDetail"><van-icon name="edit" />编辑商品</button><button class="button button-danger" :disabled="!!storageError || transferBusy || detailProduct.stock > 0 || detailUnits.length > 0" @click="removeProduct"><van-icon name="delete-o" />删除商品</button></div><p v-if="detailProduct.stock > 0 || detailUnits.length" class="delete-help">有库存或已建立单件档案的商品不能删除。</p></div></template>
+      <template v-if="detailProduct"><div class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><span class="sheet-kicker">PRODUCT DETAILS</span><h2>商品详情</h2></div><div class="detail-body"><div class="detail-product"><span class="product-avatar large">{{ detailProduct.name.slice(0, 1) }}</span><div><h3>{{ detailProduct.name }}</h3><p>{{ detailProduct.sku ? `编号 ${detailProduct.sku}` : '未设置商品编号' }}</p></div></div><div class="detail-stock"><span>当前库存</span><strong>{{ detailProduct.stock.toLocaleString('zh-CN') }}<small>{{ detailProduct.unit }}</small></strong><div class="detail-stock-actions"><button class="button button-secondary" :disabled="!!storageError || transferBusy || detailProduct.stock === 0" @click="openMovement('out', detailProduct)">出库</button><button class="button button-primary" :disabled="!!storageError || transferBusy" @click="openMovement('in', detailProduct)">入库</button></div></div><dl class="detail-meta"><div><dt>包装规格</dt><dd>{{ detailProduct.specification || '未配置 OCR 参考' }}</dd></div><div><dt>生产厂家</dt><dd>{{ detailProduct.manufacturer || '未配置 OCR 参考' }}</dd></div><div><dt>商品类型</dt><dd>{{ productTypeLabel(detailProduct) }} · {{ detailProduct.trackingMode === 'unique' ? '每件唯一身份' : '仅管理数量' }}</dd></div><div><dt>分类</dt><dd>{{ detailProduct.category || '未分类' }}</dd></div><div><dt>低库存阈值</dt><dd>{{ detailProduct.lowStockThreshold == null ? '提醒关闭' : detailProduct.lowStockThreshold + ' ' + detailProduct.unit }}<span v-if="isLowStock(detailProduct)" class="low-stock-badge"> · 当前低库存</span></dd></div><div><dt>商品条码</dt><dd class="barcode-value">{{ detailProduct.barcode || '未设置条码' }}</dd></div><div><dt>备注</dt><dd>{{ detailProduct.note || '暂无备注' }}</dd></div><div><dt>创建时间</dt><dd>{{ formatDate(detailProduct.createdAt, true) }}</dd></div><div><dt>更新时间</dt><dd>{{ formatDate(detailProduct.updatedAt, true) }}</dd></div></dl><section v-if="detailProduct.trackingMode === 'unique'" class="unit-ledger"><h3>单件档案</h3><p>在库 {{ detailUnits.filter(unit => unit.status === 'in').length }} 件 · 已出库 {{ detailUnits.filter(unit => unit.status === 'out').length }} 件</p><div v-for="unit in detailUnits" :key="unit.code"><code>{{ unit.code }}</code><span :class="unit.status">{{ unit.status === 'in' ? '在库' : '已出库' }}</span><details v-if="unit.packagingCheck" class="unit-packaging"><summary>上次包装校验：{{ packagingStatusLabels[unit.packagingCheck.status] }}</summary><p>{{ formatDate(unit.packagingCheck.checkedAt, true) }} · 按当时参考信息校验</p><div v-for="(field, key) in unit.packagingCheck.fields" :key="key">{{ fieldLabels[key] }}：{{ fieldStatusLabels[field.status] }}</div><p v-for="capture in unit.packagingCheck.captures" :key="capture.id">{{ capture.text }}</p></details><small v-else class="unit-packaging">包装文字未核实</small></div><p v-if="!detailUnits.length">尚未登记单件码。</p></section><div class="detail-bottom-actions"><button class="button button-secondary" :disabled="!!storageError || transferBusy" @click="editDetail"><van-icon name="edit" />编辑商品</button><button class="button button-danger" :disabled="!!storageError || transferBusy || detailProduct.stock > 0 || detailUnits.length > 0" @click="removeProduct"><van-icon name="delete-o" />删除商品</button></div><p v-if="detailProduct.stock > 0 || detailUnits.length" class="delete-help">有库存或已建立单件档案的商品不能删除。</p></div></template>
     </van-popup>
   </div>
 </template>

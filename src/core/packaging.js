@@ -16,6 +16,30 @@ export function createPackagingCheck(product, unitCode, captures, options = {}) 
   unitCode = unitCode.trim()
   if (options.confirmedSameBox !== true) throw new Error('请确认各面照片均来自同一个药盒')
   const expected = {name: expectedText(product.name,80,'名称'), specification:expectedText(product.specification ?? '',120,'规格'), manufacturer:expectedText(product.manufacturer ?? '',120,'生产企业')}
+  const copied = validateCaptures(captures)
+  const observed = observeCaptures(copied,expected.name)
+  const fields = {}
+  for (const key of FIELD_KEYS) {
+    const values = [...new Set(observed[key])]
+    const target = normalizePackagingText(expected[key])
+    fields[key] = {status: !target ? 'unconfigured' : values.some(value => normalizePackagingText(value) !== target) ? 'conflict' : values.length ? 'matched' : 'missing', observed:values}
+  }
+  const status = FIELD_KEYS.some(key => fields[key].status === 'conflict') ? 'conflict' : FIELD_KEYS.every(key => fields[key].status === 'matched') ? 'matched' : 'incomplete'
+  const checkedAt = options.checkedAt ?? new Date().toISOString()
+  if (!time(checkedAt)) throw new Error('包装核对时间不正确')
+  return {productId:product.id,unitCode,expected,captures:copied,fields,status,confirmedSameBox:true,checkedAt}
+}
+/** History must reproduce its own reference snapshot after product edits. */
+export function validatePackagingCheck(record) {
+  if (!object(record) || !object(record.expected) || record.unitCode !== record.unitCode?.trim() || !time(record.checkedAt)) throw new Error('包装核对快照格式不正确')
+  const expected = createPackagingCheck({id:record.productId,...record.expected},record.unitCode,record.captures,{confirmedSameBox:record.confirmedSameBox,checkedAt:record.checkedAt})
+  if (record.status === 'conflict' || stable(record) !== stable(expected)) throw new Error('包装核对快照损坏或存在冲突')
+  return record
+}
+
+function stable(value) { return JSON.stringify(value, (_, item) => object(item) ? Object.fromEntries(Object.keys(item).sort().map(key => [key,item[key]])) : item) }
+
+function validateCaptures(captures) {
   if (!Array.isArray(captures) || captures.length < 1 || captures.length > 6) throw new Error('包装核对须保留1至6面文字')
   const ids = new Set()
   const copied = captures.map(capture => {
@@ -23,6 +47,10 @@ export function createPackagingCheck(product, unitCode, captures, options = {}) 
     ids.add(capture.id)
     return {id:capture.id,text:capture.text,createdAt:capture.createdAt}
   })
+  return copied
+}
+
+function observeCaptures(copied,expectedName = '') {
   const observed = Object.fromEntries(FIELD_KEYS.map(key => [key, []]))
   const allLabels = Object.values(LABELS).flat().join('|')
   const labelOnly = new RegExp(`^(?:\\[(${allLabels})\\]|(${allLabels}))\\s*:?\\s*$`)
@@ -56,26 +84,32 @@ export function createPackagingCheck(product, unitCode, captures, options = {}) 
           if (match) observed[key].push(match[3].trim())
         }
       }
-      if (expected.name && normalizePackagingText(line) === normalizePackagingText(expected.name)) observed.name.push(line)
+      if (expectedName && normalizePackagingText(line) === normalizePackagingText(expectedName)) observed.name.push(line)
     }
   }
-  const fields = {}
-  for (const key of FIELD_KEYS) {
-    const values = [...new Set(observed[key])]
-    const target = normalizePackagingText(expected[key])
-    fields[key] = {status: !target ? 'unconfigured' : values.some(value => normalizePackagingText(value) !== target) ? 'conflict' : values.length ? 'matched' : 'missing', observed:values}
-  }
-  const status = FIELD_KEYS.some(key => fields[key].status === 'conflict') ? 'conflict' : FIELD_KEYS.every(key => fields[key].status === 'matched') ? 'matched' : 'incomplete'
-  const checkedAt = options.checkedAt ?? new Date().toISOString()
-  if (!time(checkedAt)) throw new Error('包装核对时间不正确')
-  return {productId:product.id,unitCode,expected,captures:copied,fields,status,confirmedSameBox:true,checkedAt}
-}
-/** History must reproduce its own reference snapshot after product edits. */
-export function validatePackagingCheck(record) {
-  if (!object(record) || !object(record.expected) || record.unitCode !== record.unitCode?.trim() || !time(record.checkedAt)) throw new Error('包装核对快照格式不正确')
-  const expected = createPackagingCheck({id:record.productId,...record.expected},record.unitCode,record.captures,{confirmedSameBox:record.confirmedSameBox,checkedAt:record.checkedAt})
-  if (record.status === 'conflict' || stable(record) !== stable(expected)) throw new Error('包装核对快照损坏或存在冲突')
-  return record
+  return observed
 }
 
-function stable(value) { return JSON.stringify(value, (_, item) => object(item) ? Object.fromEntries(Object.keys(item).sort().map(key => [key,item[key]])) : item) }
+export function extractPackagingFields(captures) {
+  const copied = validateCaptures(captures)
+  const observed = observeCaptures(copied)
+  if (!observed.name.length) {
+    for (const capture of copied) {
+      const lines = capture.text.split(/\r?\n/).map(raw => raw.normalize('NFKC').replace(/【/g,'[').replace(/】/g,']').trim()).filter(Boolean)
+      for (let index=0; index<lines.length; index++) {
+      const line = lines[index]
+      if (index > 0 && /^(?:\[[^\]]+\]\s*:?|[\p{Script=Han}]{2,12}:)$/u.test(lines[index-1])) continue
+      // A short complete title can be a candidate; sentences and instruction prose cannot.
+      if (line.length <= 40 && /^[\p{Script=Han}A-Za-z0-9()]+(?:片|胶囊|颗粒|口服液|注射液|药膏|滴眼液)$/u.test(line) && !/(?:本品|用于|服用|适用|治疗|说明|注意|请|禁止|应当|可用于|的)/u.test(line)) observed.name.push(line)
+      }
+    }
+  }
+  const result = {}
+  for (const key of FIELD_KEYS) {
+    const unique = new Map()
+    for (const value of observed[key]) if (!unique.has(normalizePackagingText(value))) unique.set(normalizePackagingText(value),value)
+    const candidates = [...unique.values()]
+    result[key] = {value:candidates.length === 1 ? candidates[0] : '',status:candidates.length === 1 ? 'recognized' : candidates.length ? 'ambiguous' : 'missing',candidates}
+  }
+  return result
+}

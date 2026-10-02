@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {createPackagingCheck} from '../src/core/packaging.js'
+import {createPackagingCheck,extractPackagingFields} from '../src/core/packaging.js'
 import {createEmptyState,addProduct,updateProduct,recordMovement} from '../src/core/inventory.js'
 import {validateState,loadState} from '../src/core/storage.js'
 import {exportInventory,parseInventoryImport} from '../src/core/dataTransfer.js'
@@ -94,4 +94,48 @@ test('M4 标签之间不跨越，相邻标签缺值为missing，不串面补值'
  assert.equal(cross.fields.specification.status,'missing')
  const final=check('药品名称：\n阿莫西林胶囊\n规格：')
  assert.equal(final.fields.specification.status,'missing')
+})
+
+
+test('M4 入库照片提取三字段，名称仅唯一短完整药品标题或明确标签',()=>{
+ const extracted=extractPackagingFields([capture(full)])
+ assert.equal(extracted.name.value,product.name);assert.equal(extracted.specification.value,product.specification);assert.equal(extracted.manufacturer.value,product.manufacturer)
+ assert.equal(extractPackagingFields([capture('阿莫西林胶囊')]).name.status,'recognized')
+ for(const text of ['请服用阿莫西林胶囊','本品用于治疗感染，属于阿莫西林胶囊','生产企业：\n阿莫西林胶囊']) assert.equal(extractPackagingFields([capture(text)]).name.status,'missing')
+ assert.equal(extractPackagingFields([capture('阿莫西林胶囊\n布洛芬胶囊')]).name.status,'ambiguous')
+ assert.equal(extractPackagingFields([capture('规格:0.25g*24粒\n规格:０．２５ｇ×２４粒')]).specification.status,'recognized')
+ assert.equal(extractPackagingFields([capture('规格:0.25g*24粒\n规格:0.5g*24粒')]).specification.status,'ambiguous')
+ assert.throws(()=>extractPackagingFields([]))
+})
+test('M4 照片参考填充空字段随流水原子提交，并用新参考核对同组文字',()=>{
+ const empty={...product,specification:'',manufacturer:''}
+ const s=addProduct(createEmptyState(),empty,{id:'p',now}).state
+ const captures=[capture(full)]
+ const value={...input([{unitCode:'001',captures,confirmedSameBox:true}]),referenceFromPackaging:{captures,confirmedSameBox:true}}
+ const result=recordMovement(s,value,{id:'m',now})
+ assert.equal(s.products[0].specification,'');assert.equal(s.products[0].manufacturer,'')
+ assert.equal(result.state.products[0].specification,product.specification);assert.equal(result.state.products[0].manufacturer,product.manufacturer)
+ assert.equal(result.movement.packagingChecks[0].status,'matched');validateState(result.state)
+ assert.deepEqual(parseInventoryImport(exportInventory(result.state)),result.state)
+})
+test('M4 照片参考保护原值、错药及模糊名称拒绝；缺字段继续留空',()=>{
+ for(const text of [full.replace(product.name,'布洛芬胶囊'),full.replace(product.specification,'0.5g*24粒'),full.replace(product.manufacturer,'其他药业'),full+'\n商品名称:布洛芬胶囊','规格:0.25g*24粒']) {
+  const s=base(),snapshot=JSON.stringify(s)
+  assert.throws(()=>recordMovement(s,{...input([]),referenceFromPackaging:{captures:[capture(text)],confirmedSameBox:true}},{id:'m',now}));assert.equal(JSON.stringify(s),snapshot)
+ }
+ const s=addProduct(createEmptyState(),{...product,specification:'',manufacturer:''},{id:'p',now}).state
+ const r=recordMovement(s,{...input([]),referenceFromPackaging:{captures:[capture(product.name)],confirmedSameBox:true}},{id:'m',now})
+ assert.equal(r.state.products[0].specification,'');assert.equal(r.state.products[0].manufacturer,'')
+ assert.throws(()=>recordMovement(r.state,{...input([],'out'),referenceFromPackaging:{captures:[capture(full)],confirmedSameBox:true}},{id:'out',now}),/入库/)
+})
+
+test('M4 照片参考保存失败不更新规格企业，重试与重载保留提取结果',()=>{
+ let raw=null,fail=false
+ const storage={getItem:()=>raw,setItem:(key,value)=>{if(fail)throw Error('disk');raw=value}}
+ const store=createInventoryStore(storage);const p=store.addProduct({...product,specification:'',manufacturer:''})
+ const captures=[capture(full)],value={...input([{unitCode:'001',captures,confirmedSameBox:true}]),productId:p.id,referenceFromPackaging:{captures,confirmedSameBox:true}}
+ const snapshot=JSON.stringify(store.state),previous=raw;fail=true
+ assert.throws(()=>store.recordMovement(value),/保存/);assert.equal(JSON.stringify(store.state),snapshot);assert.equal(raw,previous)
+ fail=false;store.recordMovement(value)
+ const restored=createInventoryStore(storage);assert.equal(restored.state.products[0].specification,product.specification);assert.equal(restored.state.products[0].manufacturer,product.manufacturer);assert.equal(restored.state.units[0].packagingCheck.status,'matched')
 })
