@@ -5,6 +5,7 @@ import {
   deleteProduct as deleteProductFromState,
   recordMovement as recordMovementInState,
   createEmptyState,
+  validateScanBatch as previewScanBatch,
 } from '../core/inventory.js'
 import { loadState, saveState, migrateState, validateState } from '../core/storage.js'
 
@@ -18,6 +19,7 @@ export function createInventoryStore(storage) {
     const loaded = loadState(backend)
     state.products = loaded.products
     state.movements = loaded.movements
+    state.units = loaded.units
   } catch (cause) {
     error.value = `启动读取失败：${cause instanceof Error ? cause.message : '未知错误'}`
   }
@@ -28,6 +30,7 @@ export function createInventoryStore(storage) {
     saveState(backend, result.state)
     state.products = result.state.products
     state.movements = result.state.movements
+    state.units = result.state.units
     return result[valueKey]
   }
 
@@ -43,6 +46,7 @@ export function createInventoryStore(storage) {
     deleteProduct(id) {
       return commit(() => deleteProductFromState(state, id), 'product')
     },
+    validateScanBatch(input) { return previewScanBatch(state, input) },
     recordMovement(input) {
       return commit(() => recordMovementInState(state, input), 'movement')
     },

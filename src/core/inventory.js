@@ -1,7 +1,7 @@
 /** Inventory rules. Every transition returns a new state and leaves its input untouched. */
 
 export function createEmptyState() {
-  return { products: [], movements: [] }
+  return { products: [], movements: [], units: [] }
 }
 
 function object(value) {
@@ -21,7 +21,13 @@ function productFields(input, previous) {
   if (!object(input)) throw new Error('商品信息格式不正确')
   if (Object.prototype.hasOwnProperty.call(input, 'stock')) throw new Error('库存只能通过入库或出库调整')
 
+  const productType = input.productType === undefined ? previous?.productType ?? 'unknown' : input.productType
+  const trackingMode = input.trackingMode === undefined ? previous?.trackingMode ?? 'quantity' : input.trackingMode
+  if (!['unknown', 'ordinary', 'medicine'].includes(productType)) throw new Error('商品类型不正确')
+  if (!['quantity', 'unique'].includes(trackingMode)) throw new Error('管理模式不正确')
+  if (productType === 'medicine' && trackingMode !== 'unique') throw new Error('药品必须按单件唯一码管理')
   return {
+    productType, trackingMode,
     name: textField(input.name, '商品名称', 80, {
       required: true,
       fallback: previous?.name,
@@ -132,19 +138,21 @@ export function addProduct(state, input, meta) {
   const { id, now } = metadata(meta)
   if (state.products.some((product) => product.id === id)) throw new Error('商品标识已存在')
   const product = { id, ...fields, stock: 0, createdAt: now, updatedAt: now }
-  return { state: { products: [...state.products, product], movements: state.movements }, product }
+  return { state: { ...state, units: state.units ?? [], products: [...state.products, product], movements: state.movements }, product }
 }
 
 /** @returns {{state: object, product: object}} */
 export function updateProduct(state, id, input, meta) {
   const previous = requireProduct(state, id)
   const fields = productFields(input, previous)
+  if (fields.trackingMode !== (previous.trackingMode ?? 'quantity') && (previous.stock !== 0 || (state.units ?? []).some(u => u.productId === id))) throw new Error('仅库存为零且从未建立单件实例时可切换模式')
   uniqueSku(state.products, fields.sku, id)
   uniqueBarcode(state.products, fields.barcode, id)
   const { now } = metadata(meta)
   const product = { ...previous, ...fields, updatedAt: now }
   return {
     state: {
+      ...state, units: state.units ?? [],
       products: state.products.map((item) => item.id === id ? product : item),
       movements: state.movements,
     },
@@ -155,9 +163,10 @@ export function updateProduct(state, id, input, meta) {
 /** A deleted product's movement snapshots remain in history. */
 export function deleteProduct(state, id) {
   const product = requireProduct(state, id)
+  if ((state.units ?? []).some(u => u.productId === id)) throw new Error('已有单件实例的商品不能删除')
   if (product.stock > 0) throw new Error('该商品仍有库存，不能删除')
   return {
-    state: { products: state.products.filter((item) => item.id !== id), movements: state.movements },
+    state: { ...state, units: state.units ?? [], products: state.products.filter((item) => item.id !== id), movements: state.movements },
     product,
   }
 }
@@ -167,7 +176,9 @@ export function recordMovement(state, input, meta) {
   if (!object(input)) throw new Error('出入库信息格式不正确')
   const product = requireProduct(state, input.productId)
   if (input.type !== 'in' && input.type !== 'out') throw new Error('请选择入库或出库')
-  const quantity = quantityValue(input.quantity)
+  const preview = validateScanBatch(state, input)
+  const quantity = preview.quantity
+  if (preview.newCodes.length && input.confirmBinding !== true) throw new Error('首次绑定唯一码须人工确认商品')
   const note = textField(input.note, '备注', 300, { fallback: '' })
   const afterStock = input.type === 'in' ? product.stock + quantity : product.stock - quantity
   if (input.type === 'out' && afterStock < 0) throw new Error('库存不足，无法出库')
@@ -175,7 +186,8 @@ export function recordMovement(state, input, meta) {
   const { id, now } = metadata(meta)
   if (state.movements.some((movement) => movement.id === id)) throw new Error('流水标识已存在')
   const movement = {
-    id,
+    id, codes: preview.codes,
+    ...(input.batchId === undefined ? {} : { batchId: input.batchId.trim() }),
     productId: product.id,
     productName: product.name,
     productSku: product.sku,
@@ -190,9 +202,52 @@ export function recordMovement(state, input, meta) {
   const updatedProduct = { ...product, stock: afterStock, updatedAt: now }
   return {
     state: {
+      ...state, units: [...(state.units ?? []).map(u => preview.codes.includes(u.code) ? {...u, status: input.type, updatedAt: now} : u), ...preview.newCodes.map(code => ({code, productId: product.id, status: 'in', createdAt: now, updatedAt: now}))],
       products: state.products.map((item) => item.id === product.id ? updatedProduct : item),
       movements: [...state.movements, movement],
     },
     movement,
   }
+}
+
+export function normalizeUnitCode(value) {
+  if (typeof value !== 'string' || !/^[\x20-\x7e]*$/.test(value)) throw new Error('唯一码只能包含可打印ASCII字符')
+  const code = value.trim()
+  if (!code || code.length > 120) throw new Error('唯一码须为1至120个字符')
+  return code
+}
+export function validateScanBatch(state, input) {
+  if (!object(input)) throw new Error('出入库信息格式不正确')
+  const product = requireProduct(state, input.productId)
+  if (!['in','out'].includes(input.type)) throw new Error('请选择入库或出库')
+  const quantity = quantityValue(input.quantity)
+  if (input.batchId !== undefined) {
+    const batchId = textField(input.batchId, '批次标识', 200, { required: true })
+    if (state.movements.some(m => m.batchId === batchId)) throw new Error('该批次已提交，请勿重复提交')
+  }
+  if (input.codes !== undefined && !Array.isArray(input.codes)) throw new Error('唯一码列表格式不正确')
+  const codes = (input.codes ?? []).map(normalizeUnitCode)
+  if (new Set(codes).size !== codes.length) throw new Error('批次包含重复唯一码')
+  const newCodes = [], returnCodes = [], existingCodes = []
+  if ((product.trackingMode ?? 'quantity') === 'quantity') {
+    if (codes.length) throw new Error('数量商品不能提交单件唯一码')
+  } else {
+    if (!codes.length || codes.length !== quantity) throw new Error('数量须等于非空唯一码列表长度')
+    for (const code of codes) {
+      const unit = (state.units ?? []).find(u => u.code === code)
+      if (unit && unit.productId !== product.id) throw new Error('唯一码已绑定其他商品')
+      if (input.type === 'in') {
+        if (!unit) newCodes.push(code)
+        else if (unit.status === 'in') throw new Error('唯一码已在库，不能重复入库')
+        else returnCodes.push(code)
+      } else {
+        if (!unit || unit.status !== 'in') throw new Error('出库唯一码必须为该商品的在库单件')
+        existingCodes.push(code)
+      }
+    }
+  }
+  const afterStock = product.stock + (input.type === 'in' ? quantity : -quantity)
+  if (afterStock < 0) throw new Error('库存不足，无法出库')
+  if (!Number.isSafeInteger(afterStock)) throw new Error('库存数量超出安全范围')
+  return {productId: product.id, type: input.type, quantity, codes, newCodes, returnCodes, existingCodes, requiresBindingConfirmation: newCodes.length > 0}
 }

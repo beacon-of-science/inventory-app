@@ -1,7 +1,7 @@
-import { createEmptyState, normalizeBarcode } from './inventory.js'
+import { createEmptyState, normalizeBarcode, normalizeUnitCode } from './inventory.js'
 
 export const STORAGE_KEY = 'inventory-mvp'
-export const STORAGE_VERSION = 1
+export const STORAGE_VERSION = 2
 
 function object(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -25,6 +25,7 @@ export function validateState(state) {
     throw new Error('本地库存数据结构已损坏')
   }
 
+  if (state.units !== undefined && !Array.isArray(state.units)) throw new Error('单件实例结构损坏')
   const ids = new Set()
   const skus = new Set()
   const barcodes = new Set()
@@ -36,6 +37,7 @@ export function validateState(state) {
         !validTime(product.updatedAt)) {
       throw new Error('本地商品记录已损坏')
     }
+    if (!['unknown','ordinary','medicine'].includes(product.productType === undefined ? 'unknown' : product.productType) || !['quantity','unique'].includes(product.trackingMode === undefined ? 'quantity' : product.trackingMode) || (product.productType === 'medicine' && product.trackingMode !== 'unique')) throw new Error('商品类型或管理模式损坏')
     if (ids.has(product.id)) throw new Error('本地商品标识重复')
     ids.add(product.id)
     if (Object.prototype.hasOwnProperty.call(product, 'category') &&
@@ -59,6 +61,12 @@ export function validateState(state) {
     }
   }
 
+  const actualUnits = new Map()
+  for (const unit of state.units ?? []) {
+    if (!object(unit) || normalizeUnitCode(unit.code) !== unit.code || actualUnits.has(unit.code) || !ids.has(unit.productId) || !['in','out'].includes(unit.status) || !validTime(unit.createdAt) || !validTime(unit.updatedAt) || state.products.find(p => p.id === unit.productId).trackingMode !== 'unique') throw new Error('单件实例记录损坏')
+    actualUnits.set(unit.code, unit)
+  }
+  const replayUnits = new Map(), batchIds = new Set(), tracked = new Set()
   const movementIds = new Set()
   const lastStockByProduct = new Map()
   for (const movement of state.movements) {
@@ -74,6 +82,23 @@ export function validateState(state) {
           : movement.beforeStock - movement.afterStock !== movement.quantity)) {
       throw new Error('本地出入库记录已损坏')
     }
+    if (movement.batchId !== undefined) {
+      if (!validText(movement.batchId, 200, true) || movement.batchId !== movement.batchId.trim() || batchIds.has(movement.batchId)) throw new Error('批次标识损坏或重复')
+      batchIds.add(movement.batchId)
+    }
+    const codes = movement.codes === undefined ? [] : movement.codes
+    if (!Array.isArray(codes) || new Set(codes).size !== codes.length || codes.some(code => normalizeUnitCode(code) !== code)) throw new Error('流水唯一码损坏')
+    if (codes.length) {
+      const product = state.products.find(p => p.id === movement.productId)
+      if (!product || product.trackingMode !== 'unique' || codes.length !== movement.quantity || (!tracked.has(product.id) && movement.beforeStock !== 0)) throw new Error('单件流水模式或数量不一致')
+      tracked.add(product.id)
+      for (const code of codes) {
+        const previous = replayUnits.get(code)
+        if (previous && previous.productId !== movement.productId) throw new Error('唯一码跨商品绑定')
+        if (movement.type === 'in' ? previous?.status === 'in' : !previous || previous.status !== 'in') throw new Error('单件流水状态不一致')
+        replayUnits.set(code, {code, productId: movement.productId, status: movement.type, createdAt: previous?.createdAt ?? movement.createdAt, updatedAt: movement.createdAt})
+      }
+    } else if (tracked.has(movement.productId)) throw new Error('单件历史中不能混入数量流水')
     if (movementIds.has(movement.id)) throw new Error('本地流水标识重复')
     movementIds.add(movement.id)
     const previousStock = lastStockByProduct.get(movement.productId) ?? 0
@@ -87,6 +112,14 @@ export function validateState(state) {
   }
   for (const finalStock of lastStockByProduct.values()) {
     if (finalStock !== 0) throw new Error('已删除商品的出入库流水未结清')
+  }
+  if (actualUnits.size !== replayUnits.size) throw new Error('单件实例与历史数量不一致')
+  for (const [code, expected] of replayUnits) {
+    const unit = actualUnits.get(code)
+    if (!unit || ['productId','status','createdAt','updatedAt'].some(key => unit[key] !== expected[key])) throw new Error('单件实例与流水不一致')
+  }
+  for (const product of state.products) {
+    if (product.trackingMode === 'unique' && product.stock !== [...actualUnits.values()].filter(u => u.productId === product.id && u.status === 'in').length) throw new Error('单件库存与实例不一致')
   }
   return state
 }
@@ -109,7 +142,7 @@ export function loadState(storage) {
   if (!object(envelope) || !Object.prototype.hasOwnProperty.call(envelope, 'version')) {
     throw new Error('本地库存数据格式不受支持，请先备份原数据')
   }
-  if (envelope.version !== STORAGE_VERSION) {
+  if (![1, STORAGE_VERSION].includes(envelope.version)) {
     throw new Error('本地库存数据版本不受支持，请先备份原数据')
   }
   return migrateState(envelope.state)
@@ -120,11 +153,15 @@ export function migrateState(source) {
   const state = validateState(source)
   return {
     ...state,
+    units: state.units ?? [],
+    movements: state.movements.map(m => ({...m, codes: m.codes ?? []})),
     products: state.products.map((product) => ({
       ...product,
       barcode: product.barcode ?? '',
       category: product.category ?? '',
       lowStockThreshold: product.lowStockThreshold ?? null,
+      productType: product.productType === undefined ? 'unknown' : product.productType,
+      trackingMode: product.trackingMode === undefined ? 'quantity' : product.trackingMode,
     })),
   }
 }

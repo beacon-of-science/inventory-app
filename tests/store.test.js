@@ -85,7 +85,7 @@ for (const [label, raw] of [
     ]) assert.throws(action, /只读保护状态/)
     assert.equal(backend.raw, raw)
     assert.equal(backend.writes, 0)
-    assert.deepEqual(snapshot(store), { products: [], movements: [] })
+    assert.deepEqual(snapshot(store), { products: [], movements: [], units: [] })
   })
 }
 

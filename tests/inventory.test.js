@@ -18,7 +18,7 @@ const movement = (state, type, quantity, id = 'm1') => recordMovement(state, { p
 test('商品新增修剪文本，默认库存为零，空 SKU 可以重复', () => {
   const original = freeze(createEmptyState())
   const { state, product } = addProduct(original, { name: '  螺丝  ', sku: '  P-01 ', unit: '  个 ', note: ' 测试 ' }, meta('p1'))
-  assert.deepEqual(product, { id: 'p1', name: '螺丝', sku: 'P-01', barcode: '', category: '', lowStockThreshold: null, unit: '个', note: '测试', stock: 0, createdAt: time, updatedAt: time })
+  assert.deepEqual(product, { id: 'p1', productType: 'unknown', trackingMode: 'quantity', name: '螺丝', sku: 'P-01', barcode: '', category: '', lowStockThreshold: null, unit: '个', note: '测试', stock: 0, createdAt: time, updatedAt: time })
   assert.deepEqual(original, createEmptyState())
   assert.equal(state.products.length, 1)
   const first = addProduct(state, { name: '空编码一' }, meta('p2')).state

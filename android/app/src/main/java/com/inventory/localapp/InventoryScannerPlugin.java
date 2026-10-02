@@ -6,6 +6,7 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import androidx.activity.result.ActivityResult;
 import com.getcapacitor.JSObject;
+import com.getcapacitor.JSArray;
 import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -22,6 +23,17 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class InventoryScannerPlugin extends Plugin {
     private final AtomicBoolean scanning = new AtomicBoolean(false);
     private PluginCall pendingCall;
+
+    @PluginMethod
+    public void scanInventoryBatch(PluginCall call) {
+        String mode = call.getString("mode", "");
+        String barcode = call.getString("barcode", "");
+        String format = call.getString("format");
+        if (!(mode.equals("single") || mode.equals("multiple") || mode.equals("unique")) || !(InventoryBatchSession.validCode(barcode, 80) || (mode.equals("unique") && barcode.isEmpty())) || (format != null && !BarcodeFormats.supports(format))) {
+            call.reject("扫码参数无效", "INVALID_INPUT"); return;
+        }
+        scan(call);
+    }
 
     @PluginMethod
     public void scan(PluginCall call) {
@@ -67,7 +79,10 @@ public class InventoryScannerPlugin extends Plugin {
         getActivity().runOnUiThread(() -> {
             try {
                 if (pendingCall != call || !scanning.get()) return;
-                startActivityForResult(call, new Intent(getContext(), BarcodeScannerActivity.class), "scanResult");
+                boolean batch = call.getMethodName().equals("scanInventoryBatch");
+                Intent intent = new Intent(getContext(), batch ? InventoryBatchScannerActivity.class : BarcodeScannerActivity.class);
+                if (batch) intent.putExtra("mode", call.getString("mode")).putExtra("barcode", call.getString("barcode")).putExtra("format", call.getString("format"));
+                startActivityForResult(call, intent, "scanResult");
             } catch (Exception exception) {
                 fail(call, "无法打开扫码页面，请重试或手动输入商品条码", "SCAN_FAILED");
             }
@@ -88,6 +103,17 @@ public class InventoryScannerPlugin extends Plugin {
         if (activityResult.getResultCode() != Activity.RESULT_OK || data == null) {
             result.put("cancelled", true);
         } else {
+            if (call.getMethodName().equals("scanInventoryBatch")) {
+                java.util.ArrayList<String> codes = data.getStringArrayListExtra("codes");
+                String mode = call.getString("mode", "");
+                if (codes == null || codes.isEmpty() || codes.size() > 10000 || codes.stream().anyMatch(value -> !InventoryBatchSession.validCode(value, mode.equals("unique") ? 120 : 80) || (!mode.equals("unique") && !value.equals(call.getString("barcode")))) || (mode.equals("unique") && new java.util.HashSet<>(codes).size() != codes.size())) {
+                    call.reject("识别结果无效，请重新扫码", "INVALID_RESULT"); return;
+                }
+                result.put("cancelled", false);
+                result.put("codes", new JSArray(codes));
+                result.put("quantity", codes.size());
+                call.resolve(result); return;
+            }
             String barcode = data.getStringExtra("barcode");
             String format = data.getStringExtra("format");
             if (barcode == null || barcode.isEmpty() || !BarcodeFormats.supports(format)) {

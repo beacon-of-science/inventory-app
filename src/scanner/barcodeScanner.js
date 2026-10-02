@@ -1,8 +1,8 @@
-import { Capacitor, registerPlugin } from '@capacitor/core'
+import { Capacitor } from '@capacitor/core'
+import { BARCODE_FORMATS, inventoryScannerPlugin } from './nativeScanner.js'
+export { BARCODE_FORMATS } from './nativeScanner.js'
+export { scanInventoryBatch, createInventoryBatchScanner } from './inventoryBatchScanner.js'
 
-export const BARCODE_FORMATS = Object.freeze([
-  'EAN_13', 'EAN_8', 'UPC_A', 'UPC_E', 'CODE_128', 'CODE_39', 'CODE_93', 'ITF', 'CODABAR',
-])
 
 /** Dependencies can be injected for tests; production always invokes the native plugin. */
 export function createBarcodeScanner({ platform, plugin }) {
@@ -33,5 +33,5 @@ export function createBarcodeScanner({ platform, plugin }) {
 
 export const scanBarcode = createBarcodeScanner({
   platform: () => Capacitor.getPlatform(),
-  plugin: registerPlugin('InventoryScanner'),
+  plugin: inventoryScannerPlugin,
 })
