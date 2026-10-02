@@ -90,26 +90,41 @@ function observeCaptures(copied,expectedName = '') {
   return observed
 }
 
-export function extractPackagingFields(captures) {
+export function extractPackagingFields(captures, options = {}) {
   const copied = validateCaptures(captures)
-  const observed = observeCaptures(copied)
-  if (!observed.name.length) {
-    for (const capture of copied) {
-      const lines = capture.text.split(/\r?\n/).map(raw => raw.normalize('NFKC').replace(/【/g,'[').replace(/】/g,']').trim()).filter(Boolean)
-      for (let index=0; index<lines.length; index++) {
+  const observed = observeCaptures(copied, typeof options.expectedName === 'string' ? options.expectedName : '')
+  const inferred = Object.fromEntries(FIELD_KEYS.map(key => [key, []]))
+  // Suggestions are deliberately separate from the historical evidence parser.
+  const unsafe = /(?:本品|用于|服用|适用|治疗|说明|注意|请|禁止|应当|建议|每天|每日|每次|一次|一日|用法|用量|适应症|不良反应|禁忌|批准|国药|批号|日期|有效期|生产日期|电话|传真|热线|地址|网址|www\.|https?:|广告|推荐|欢迎|首选|优惠|疗效)/iu
+  const dosageForm = '(?:肠溶胶囊|软胶囊|胶囊|缓释片|控释片|肠溶片|咀嚼片|分散片|含片|片|颗粒|口服液|口服溶液|口服混悬液|混悬液|注射液|注射用粉针剂|冻干粉针剂|滴眼液|滴鼻液|滴耳液|眼膏|软膏|乳膏|药膏|凝胶|栓剂|滴丸|丸|散剂|散|合剂|糖浆|喷雾剂|气雾剂|吸入剂|洗剂|搽剂|贴剂)'
+  const title = new RegExp(`^[\\p{Script=Han}A-Za-z0-9()-]{2,50}${dosageForm}(?:\\([^()]{1,20}\\))?$`, 'u')
+  const dose = '(?:[0-9]+(?:\\.[0-9]+)?\\s*(?:μg|ug|mcg|mg|kg|g|mL|ml|L|l|IU|万单位|单位|毫克|微克|克|毫升)(?:\\s*\\/\\s*(?:片|粒|支|袋|瓶|丸|mL|ml))?)'
+  const count = '(?:[0-9]+\\s*(?:片|粒|支|袋|瓶|丸|贴|枚|包))'
+  const spec = new RegExp(`^(?:${dose}|${count})(?:\\s*[×xX*]\\s*(?:${dose}|${count}|[0-9]+))*?(?:\\s*\\/\\s*(?:盒|瓶|袋|板|包))?$`, 'u')
+  const company = /^[\p{Script=Han}A-Za-z0-9()· -]{2,90}(?:股份有限公司|有限责任公司|有限公司|制药厂|药厂)$/u
+  for (const capture of copied) {
+    const lines = capture.text.split(/\r?\n/).map(raw => raw.normalize('NFKC').replace(/【/g,'[').replace(/】/g,']').trim()).filter(Boolean)
+    for (let index = 0; index < lines.length; index++) {
       const line = lines[index]
-      if (index > 0 && /^(?:\[[^\]]+\]\s*:?|[\p{Script=Han}]{2,12}:)$/u.test(lines[index-1])) continue
-      // A short complete title can be a candidate; sentences and instruction prose cannot.
-      if (line.length <= 40 && /^[\p{Script=Han}A-Za-z0-9()]+(?:片|胶囊|颗粒|口服液|注射液|药膏|滴眼液)$/u.test(line) && !/(?:本品|用于|服用|适用|治疗|说明|注意|请|禁止|应当|可用于|的)/u.test(line)) observed.name.push(line)
-      }
+      if (unsafe.test(line) || /[:：]/u.test(line)) continue
+      if (index > 0 && (unsafe.test(lines[index - 1]) || /^(?:\[[^\]]+\]\s*:?|[\p{Script=Han}]{2,12}:|经销商|经销企业|销售商|上市许可持有人)$/u.test(lines[index - 1]))) continue
+      if (title.test(line) && /\p{Script=Han}/u.test(line) && !/的/u.test(line)) inferred.name.push(line)
+      const unwrapped = /^\([^()]+\)$/.test(line) ? line.slice(1, -1).trim() : line
+      if (unwrapped.length <= 120 && spec.test(unwrapped)) inferred.specification.push(line)
+      if (company.test(line)) inferred.manufacturer.push(line)
     }
   }
   const result = {}
   for (const key of FIELD_KEYS) {
-    const unique = new Map()
-    for (const value of observed[key]) if (!unique.has(normalizePackagingText(value))) unique.set(normalizePackagingText(value),value)
-    const candidates = [...unique.values()]
-    result[key] = {value:candidates.length === 1 ? candidates[0] : '',status:candidates.length === 1 ? 'recognized' : candidates.length ? 'ambiguous' : 'missing',candidates}
+    const unique = values => [...new Map(values.map(value => [normalizePackagingText(value), value])).values()]
+    const explicit = unique(observed[key])
+    const suggestions = unique(inferred[key]).filter(value => !explicit.some(item => normalizePackagingText(item) === normalizePackagingText(value)))
+    result[key] = {
+      value: explicit.length === 1 ? explicit[0] : '',
+      status: explicit.length === 1 ? 'recognized' : explicit.length > 1 ? 'ambiguous' : suggestions.length > 1 ? 'ambiguous' : suggestions.length ? 'suggested' : 'missing',
+      candidates: explicit,
+      suggestions,
+    }
   }
   return result
 }

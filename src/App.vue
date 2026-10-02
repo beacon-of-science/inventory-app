@@ -10,14 +10,41 @@ import { exportInventory, parseInventoryImport } from './core/dataTransfer.js'
 import { exportInventoryFile, importInventoryFile } from './files/inventoryFiles.js'
 
 import { installAndroidBackHandler, minimizeApp } from './navigation/androidNavigation.js'
+import OcrFieldPicker from './components/OcrFieldPicker.vue'
 import { chooseBackAction } from './navigation/backNavigation.js'
+import { resolveSwipeNavigation } from './navigation/swipeNavigation.js'
 const store = createInventoryStore()
 const pageMotion = ref('page-forward')
+const pageSwitching = ref(false)
+let pageSwitchTimer, swipeStart = null
+function finishPageSwitch() { pageSwitching.value = false; clearTimeout(pageSwitchTimer) }
+function swipeBlocked() {
+  return pageSwitching.value || productSheet.value || movementSheet.value || detailSheet.value || unknownSheet.value || importSheet.value || backupSheet.value || dialogOpen.value || scanning.value || batchScanning.value || ocrBusy.value || productOcrBusy.value || transferBusy.value
+}
+function beginSwipe(event) {
+  swipeStart = null
+  if (event.touches.length !== 1 || swipeBlocked() || event.target.closest('button,a,input,textarea,select,summary,[role="button"],pre,code')) return
+  const point = event.touches[0]
+  swipeStart = {startX:point.clientX,startY:point.clientY,startedAt:performance.now(),currentTab:tab.value,viewportWidth:window.innerWidth}
+}
+function moveSwipe(event) {
+  if (!swipeStart) return
+  if (event.touches.length !== 1 || Math.abs(event.touches[0].clientY - swipeStart.startY) > 28) swipeStart = null
+}
+function endSwipe(event) {
+  const start = swipeStart; swipeStart = null
+  if (!start || swipeBlocked() || event.changedTouches.length !== 1 || event.touches.length || start.currentTab !== tab.value) return
+  const point = event.changedTouches[0]
+  const next = resolveSwipeNavigation({...start,endX:point.clientX,endY:point.clientY,durationMs:performance.now()-start.startedAt})
+  if (next) navigateTo(next)
+}
 const filtersOpen = ref(false)
 const dialogOpen = ref(false)
 let lastRootBack = 0, stopAndroidBack = () => {}
 function navigateTo(next) {
-  if (tab.value === next) return
+  if (tab.value === next || pageSwitching.value) return
+  pageSwitching.value = true; swipeStart = null
+  pageSwitchTimer = setTimeout(finishPageSwitch, 260)
   pageMotion.value = ['products','stock','history'].indexOf(next) > ['products','stock','history'].indexOf(tab.value) ? 'page-forward' : 'page-back'
   tab.value = next; search.value = ''; filtersOpen.value = false; lastRootBack = 0
   nextTick(() => window.scrollTo({top:0,behavior:'instant'}))
@@ -44,7 +71,7 @@ function handleBack() {
 }
 function escapeBack(event) { if (event.key === 'Escape') { event.preventDefault(); handleBack() } }
 onMounted(() => { stopAndroidBack = installAndroidBackHandler(handleBack); window.addEventListener('keydown',escapeBack) })
-onUnmounted(() => { stopAndroidBack(); window.removeEventListener('keydown',escapeBack) })
+onUnmounted(() => { stopAndroidBack(); window.removeEventListener('keydown',escapeBack); clearTimeout(pageSwitchTimer) })
 const tab = ref('products')
 const search = ref('')
 const historyFilter = ref('all')
@@ -81,9 +108,13 @@ const allowIncomplete = ref(false)
 const intakeCaptures = ref([]), intakeUnitCode = ref('')
 const productOcrCaptures = ref([]), productOcrBusy = ref(false)
 const emptyExtraction = () => Object.fromEntries(['name','specification','manufacturer'].map(key => [key,{value:'',status:'missing',candidates:[]}]))
-const intakeFields = computed(() => intakeCaptures.value.length ? extractPackagingFields(intakeCaptures.value) : emptyExtraction())
+const intakeFields = computed(() => intakeCaptures.value.length ? extractPackagingFields(intakeCaptures.value,{expectedName:movementProduct.value?.name}) : emptyExtraction())
 const productOcrFields = computed(() => productOcrCaptures.value.length ? extractPackagingFields(productOcrCaptures.value) : emptyExtraction())
-const extractionLabels = {recognized:'已提取',missing:'请补拍',ambiguous:'有多个结果，请重拍'}
+const extractionLabels = {recognized:'标签或已有名称匹配',missing:'未找到，请补拍或从原文选取',ambiguous:'多个候选，请点选核对',suggested:'推测候选，请点选核对'}
+function useOcrCandidate(key, value) {
+  productForm.value[key] = value
+  notify(`已选为${fieldLabels[key]}，请核对包装`)
+}
 const intakeProblem = computed(() => {
   if (!intakeCaptures.value.length) return ''
   if (intakeFields.value.name.status !== 'recognized') return '未提取到明确药名，请拍清药名或通用名称，再翻面补拍。'
@@ -106,7 +137,7 @@ async function captureProductFace() {
       const field = productOcrFields.value[key]
       if (field.status === 'recognized') productForm.value[key] = field.value
     }
-    notify('已自动填写，请核对')
+    notify('已读取文字，请核对归类')
   } catch(error) { formError.value = error.message }
   finally { productOcrBusy.value = false }
 }
@@ -477,7 +508,7 @@ function confirmImport() {
 
     <div class="main-layout">
       <header class="mobile-brand"><span class="mini-mark"><van-icon name="apps-o" /></span><span>简库存</span><button class="backup-entry" aria-label="打开数据备份" @click="backupSheet = true"><van-icon name="shield-o" />备份</button></header>
-      <Transition :name="pageMotion" mode="out-in"><main :key="tab" class="refined-main">
+      <div class="page-stage" @touchstart.passive="beginSwipe" @touchmove.passive="moveSwipe" @touchend.passive="endSwipe" @touchcancel="swipeStart = null"><Transition :name="pageMotion" @after-enter="finishPageSwitch"><main :key="tab" class="refined-main">
         <div class="page-heading">
           <div><h1>{{ pageTitle }}</h1><p class="page-subtitle">{{ tab === 'products' ? '管理商品，随时掌握库存' : pageDescription }}</p></div><button class="backup-entry desktop-backup" aria-label="打开数据备份" @click="backupSheet = true"><van-icon name="shield-o" />数据备份</button>
           <button v-if="tab === 'products' && products.length" class="button button-primary desktop-add" :disabled="!!storageError || transferBusy" @click="openProduct()"><van-icon name="plus" />新增商品</button>
@@ -511,16 +542,16 @@ function confirmImport() {
 
         <footer class="data-footer"><van-icon name="shield-o" /><p>本机保存 · 随时可备份</p></footer>
         <div class="screen-reader-only" role="status" aria-live="polite">{{ status }}</div>
-      </main></Transition>
+      </main></Transition></div>
     </div>
 
 
     <van-popup v-model:show="backupSheet" position="bottom" round closeable :close-on-click-overlay="!transferBusy" :closeable="!transferBusy" class="sheet-popup backup-popup" aria-label="数据备份"><header class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><h2>数据备份</h2><p>把商品、库存和完整记录保存到文件。</p></header><div class="backup-body"><section class="transfer-bar" aria-label="数据导入导出"><div><strong>数据导入 / 导出</strong><span>JSON 文件 · 商品与完整流水</span></div><div class="transfer-actions"><button class="button button-secondary" :disabled="!!storageError || scanning || transferBusy" @click="exportData">导出 JSON</button><button class="button button-secondary" :disabled="!!storageError || scanning || transferBusy" @click="prepareImport">导入 JSON</button></div><p v-if="transferBusy" role="status">{{ importSheet ? '请确认或取消导入' : '正在处理文件…' }}</p></section><p class="backup-notice"><van-icon name="info-o" />数据只保存在这台设备。卸载或清除应用数据前，请先导出备份；导入文件会替换当前数据，确认前可以预览。</p></div></van-popup>
-    <nav class="bottom-nav" aria-label="底部导航"><button v-for="item in [{ id: 'products', label: '商品', icon: 'apps-o' }, { id: 'stock', label: '库存', icon: 'orders-o' }, { id: 'history', label: '记录', icon: 'clock-o' }]" :key="item.id" :class="{ active: tab === item.id }" @click="navigateTo(item.id)" :aria-current="tab === item.id ? 'page' : undefined"><van-icon :name="item.icon" /><span>{{ item.label }}</span></button></nav>
+    <nav class="bottom-nav" :style="{'--selected-tab': ['products','stock','history'].indexOf(tab)}" aria-label="底部导航"><button v-for="item in [{ id: 'products', label: '商品', icon: 'apps-o' }, { id: 'stock', label: '库存', icon: 'orders-o' }, { id: 'history', label: '记录', icon: 'clock-o' }]" :key="item.id" :class="{ active: tab === item.id }" @click="navigateTo(item.id)" :aria-current="tab === item.id ? 'page' : undefined"><van-icon :name="item.icon" /><span>{{ item.label }}</span></button></nav>
 
     <van-popup v-model:show="productSheet" position="bottom" round :closeable="!productOcrBusy && !scanning" class="sheet-popup" :close-on-click-overlay="false" aria-label="商品信息表单">
       <div class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><span class="sheet-kicker">PRODUCT DETAILS</span><h2>{{ editingId ? '编辑商品' : '新增商品' }}</h2><p>{{ editingId ? '更新商品资料，库存数量保持不变。' : '先建立商品档案，初始库存为 0。' }}</p></div>
-      <form class="sheet-form" @submit.prevent="saveProduct"><section class="product-photo-card" aria-label="包装信息自动填写"><h3>拍包装，自动填写商品信息</h3><p>拍清药名、规格和厂家，可翻面补拍。结果自动填到下面，请核对后保存。</p><button type="button" class="button button-primary" @click="captureProductFace" :disabled="productOcrBusy || scanning || productOcrCaptures.length >= 6" :aria-busy="productOcrBusy"><van-icon name="photograph" />{{ productOcrBusy ? '正在识别…' : productOcrCaptures.length ? '翻面补拍信息' : '拍摄包装' }}</button><div v-if="productOcrCaptures.length" class="extracted-fields"><div v-for="(field,key) in productOcrFields" :key="key"><span>{{ fieldLabels[key] }}</span><strong>{{ field.value || extractionLabels[field.status] }}</strong></div></div><button v-if="productOcrCaptures.length" type="button" class="text-button" :disabled="productOcrBusy" @click="resetProductOcr">清除识别原文后重拍</button></section><fieldset class="movement-fields" :disabled="productOcrBusy || scanning">
+      <form class="sheet-form" @submit.prevent="saveProduct"><section class="product-photo-card" aria-label="包装信息自动填写"><h3>拍包装，自动填写商品信息</h3><p>拍清药名、规格和厂家，可翻面补拍。有标签的文字自动填写；推测候选请点选，无需重新打字。</p><button type="button" class="button button-primary" @click="captureProductFace" :disabled="productOcrBusy || scanning || productOcrCaptures.length >= 6" :aria-busy="productOcrBusy"><van-icon name="photograph" />{{ productOcrBusy ? '正在识别…' : productOcrCaptures.length ? '翻面补拍信息' : '拍摄包装' }}</button><OcrFieldPicker v-if="productOcrCaptures.length" :fields="productOcrFields" :captures="productOcrCaptures" :selected="productForm" :disabled="productOcrBusy" @select="useOcrCandidate" /><button v-if="productOcrCaptures.length" type="button" class="text-button" :disabled="productOcrBusy" @click="resetProductOcr">清除识别原文后重拍</button></section><fieldset class="movement-fields" :disabled="productOcrBusy || scanning">
         <label class="form-field"><span>商品名称 <em>*</em></span><input v-model="productForm.name" name="product-name" placeholder="例如：纯棉短袖 T 恤" maxlength="80" autocomplete="off" required /><small>{{ productForm.name.length }}/80</small></label>
         <div class="form-grid"><label class="form-field"><span>商品编号</span><input v-model="productForm.sku" name="product-sku" placeholder="选填，例如 SKU001" maxlength="40" autocomplete="off" /></label><label class="form-field"><span>计量单位 <em>*</em></span><input v-model="productForm.unit" name="product-unit" placeholder="例如：件" maxlength="12" required /></label></div>
         <div class="form-field"><label for="product-barcode" class="barcode-label">商品条码</label><div class="barcode-input"><input id="product-barcode" v-model="productForm.barcode" name="product-barcode" type="text" placeholder="选填，扫描或手动输入" maxlength="80" autocomplete="off" :disabled="scanning" /><button type="button" class="button button-secondary" :disabled="scanning || !!storageError || transferBusy" :aria-busy="scanning" aria-label="扫码填写商品条码" @click="startScan('form')"><van-icon name="scan" />{{ scanning ? '扫码中' : '扫码' }}</button></div><small class="barcode-help">条码与商品编号分别保存，支持前导 0。{{ productForm.barcode.length }}/80</small></div>
@@ -551,7 +582,7 @@ function confirmImport() {
             <label class="form-field"><span>待确认{{ movementForm.type === 'in' ? '入库' : '出库' }}数量 <em>*</em></span><div class="quantity-input"><input v-model="movementForm.quantity" name="movement-quantity" type="number" inputmode="numeric" min="1" step="1" placeholder="核对实物后填写正整数" required /><span>{{ movementProduct.unit }}</span></div></label>
           </template>
           <template v-else>
-            <section v-if="movementForm.type === 'in'" class="intake-photo" aria-label="入库拍照提取信息"><h3><span>1</span>拍当前盒包装</h3><p>对准药名、规格和厂家，自动记录文字；不同面可补拍，不需要逐项录入。先完成这一盒，再扫描它的单件码。</p><button type="button" class="button button-primary" @click="captureIntakeFace" :disabled="intakeCaptures.length >= 6"><van-icon name="photograph" />{{ intakeCaptures.length ? '翻面补拍关键信息' : '拍包装，自动提取' }}</button><div v-if="intakeCaptures.length" class="extracted-fields"><div v-for="(field,key) in intakeFields" :key="key"><span>{{ fieldLabels[key] }}</span><strong>{{ field.value || extractionLabels[field.status] }}</strong><small :class="field.status">{{ extractionLabels[field.status] }}</small></div></div><p v-if="intakeProblem" class="form-error">{{ intakeProblem }}</p><p v-if="intakeUnitCode" class="batch-help">本次照片对应：{{ intakeUnitCode }}。其他盒需分别补拍，未拍不会记为已核实。</p><details v-if="intakeCaptures.length" class="intake-original"><summary>查看拍摄原文 · {{ intakeCaptures.length }} 面</summary><p v-for="capture in intakeCaptures" :key="capture.id">{{ capture.text }}</p></details><button v-if="intakeCaptures.length" type="button" class="text-button" @click="resetIntakePhoto">清除本盒照片文字并重新拍摄</button></section><h3 class="flow-step"><span>{{ movementForm.type === 'in' ? '2' : '1' }}</span>{{ movementForm.type === 'in' ? '扫描当前盒单件码' : '选择在库单件码' }}</h3>
+            <section v-if="movementForm.type === 'in'" class="intake-photo" aria-label="入库拍照提取信息"><h3><span>1</span>拍当前盒包装</h3><p>对准药名、规格和厂家，记录包装原文；不同面可补拍。已有药名会与完整文字行匹配，无标签的规格和厂家暂作候选，需人工核对。</p><button type="button" class="button button-primary" @click="captureIntakeFace" :disabled="intakeCaptures.length >= 6"><van-icon name="photograph" />{{ intakeCaptures.length ? '翻面补拍关键信息' : '拍包装，自动提取' }}</button><div v-if="intakeCaptures.length" class="extracted-fields"><div v-for="(field,key) in intakeFields" :key="key"><span>{{ fieldLabels[key] }}</span><strong>{{ field.value || (field.suggestions || []).join(' / ') || extractionLabels[field.status] }}</strong><small :class="field.status">{{ extractionLabels[field.status] }}</small></div></div><p v-if="intakeProblem" class="form-error">{{ intakeProblem }}</p><p v-if="intakeUnitCode" class="batch-help">本次照片对应：{{ intakeUnitCode }}。其他盒需分别补拍，未拍不会记为已核实。</p><details v-if="intakeCaptures.length" class="intake-original"><summary>查看拍摄原文 · {{ intakeCaptures.length }} 面</summary><p v-for="capture in intakeCaptures" :key="capture.id">{{ capture.text }}</p></details><button v-if="intakeCaptures.length" type="button" class="text-button" @click="resetIntakePhoto">清除本盒照片文字并重新拍摄</button></section><h3 class="flow-step"><span>{{ movementForm.type === 'in' ? '2' : '1' }}</span>{{ movementForm.type === 'in' ? '扫描当前盒单件码' : '选择在库单件码' }}</h3>
             <div class="scan-mode-note"><p>每个唯一单件码对应一件实物。已在库码不能再次入库；已出库码可回库；出库只接受当前商品的在库码。</p><button type="button" class="button button-secondary" @click="scanMovementBatch">连续扫描单件码</button></div>
             <label class="form-field"><span>待提交单件码（每行一个）</span><textarea v-model="batchCodeText" name="movement-codes" rows="4" placeholder="扫描或逐行输入追溯码 / 实例码，保留前导零" spellcheck="false"></textarea><small class="barcode-help">本地唯一性不能验证药品真伪，也不能自动证明该码属于当前商品。</small></label>
             <button v-if="movementProduct.productType !== 'medicine' && movementForm.type === 'in'" type="button" class="text-button" @click="generateLocalCode">为当前实物生成本地实例码</button>

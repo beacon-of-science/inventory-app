@@ -100,7 +100,7 @@ test('M4 标签之间不跨越，相邻标签缺值为missing，不串面补值'
 test('M4 入库照片提取三字段，名称仅唯一短完整药品标题或明确标签',()=>{
  const extracted=extractPackagingFields([capture(full)])
  assert.equal(extracted.name.value,product.name);assert.equal(extracted.specification.value,product.specification);assert.equal(extracted.manufacturer.value,product.manufacturer)
- assert.equal(extractPackagingFields([capture('阿莫西林胶囊')]).name.status,'recognized')
+ assert.equal(extractPackagingFields([capture('阿莫西林胶囊')]).name.status,'suggested')
  for(const text of ['请服用阿莫西林胶囊','本品用于治疗感染，属于阿莫西林胶囊','生产企业：\n阿莫西林胶囊']) assert.equal(extractPackagingFields([capture(text)]).name.status,'missing')
  assert.equal(extractPackagingFields([capture('阿莫西林胶囊\n布洛芬胶囊')]).name.status,'ambiguous')
  assert.equal(extractPackagingFields([capture('规格:0.25g*24粒\n规格:０．２５ｇ×２４粒')]).specification.status,'recognized')

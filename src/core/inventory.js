@@ -193,7 +193,7 @@ export function recordMovement(state, input, meta) {
   if (input.referenceFromPackaging !== undefined) {
     const reference = input.referenceFromPackaging
     if (!object(reference) || input.type !== 'in' || product.trackingMode !== 'unique' || reference.confirmedSameBox !== true) throw new Error('照片参考信息仅支持已确认同盒的单件入库')
-    const extracted = extractPackagingFields(reference.captures)
+    const extracted = extractPackagingFields(reference.captures,{expectedName:product.name})
     if (extracted.name.status !== 'recognized' || normalizePackagingText(extracted.name.value) !== normalizePackagingText(product.name)) throw new Error('照片药品名称未明确识别或与当前商品不一致')
     const fields = {}
     for (const key of ['specification','manufacturer']) {
