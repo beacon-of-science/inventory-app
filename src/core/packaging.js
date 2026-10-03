@@ -1,4 +1,5 @@
 /** Conservative OCR text comparison. Camera text is evidence, never an identity lookup. */
+import { englishManufacturerCandidates, isManufacturerRoleBoundary, prioritizeManufacturerCandidates } from './manufacturerCandidates.js'
 const FIELD_KEYS = ['name', 'specification', 'manufacturer']
 const LABELS = { name: ['药品名称','通用名称','商品名称','品名'], specification: ['规格'], manufacturer: ['生产企业','生产厂家','生产商','厂家'] }
 function object(value) { return value !== null && typeof value === 'object' && !Array.isArray(value) }
@@ -127,6 +128,12 @@ function inferOcrFieldOptions(copied) {
       const previousLabel = !labeled && index > 0 ? lines[index - 1].match(new RegExp(`^(?:\\[(${allLabels})\\]|(${allLabels}))\\s*:?\\s*$`)) : null
       if (previousLabel) labeledKey = FIELD_KEYS.find(key => LABELS[key].includes(previousLabel[1] ?? previousLabel[2]))
       if (labeled) line = cleanOcrCandidateLine(labeled[3])
+      if ((!labeledKey || labeledKey === 'manufacturer') &&
+          !isManufacturerRoleBoundary(lines[index]) &&
+          !(index > 0 && isManufacturerRoleBoundary(lines[index - 1])) &&
+          !(index > 0 && !previousLabel && /^(?:\[[^\]]+\]\s*:?|[\p{Script=Han}]{2,12}:)$/u.test(lines[index - 1]))) {
+        inferred.manufacturer.push(...englishManufacturerCandidates([...lines.slice(0,index),line], index))
+      }
       if (/[:：|丨_\u2500-\u257f\ufffd]/u.test(line) || unsafe.test(line)) continue
       if (!labeled && index > 0 && (unsafe.test(lines[index - 1]) || (!previousLabel && /^(?:\[[^\]]+\]\s*:?|[\p{Script=Han}]{2,12}:)$/u.test(lines[index - 1])))) continue
       if ((!labeledKey || labeledKey === 'name') && title.test(line) && /\p{Script=Han}/u.test(line) && !/的/u.test(line)) inferred.name.push(line)
@@ -141,9 +148,10 @@ function inferOcrFieldOptions(copied) {
 /** Field-shaped, cleaned choices for manual review; does not upgrade historical evidence. */
 export function getOcrFieldOptions(captures) {
   const inferred = inferOcrFieldOptions(validateCaptures(captures))
-  return Object.fromEntries(FIELD_KEYS.map(key => [key,
-    [...new Map(inferred[key].map(value => [normalizePackagingText(value), value])).values()],
-  ]))
+  return Object.fromEntries(FIELD_KEYS.map(key => {
+    const values = [...new Map(inferred[key].map(value => [normalizePackagingText(value), value])).values()]
+    return [key, key === 'manufacturer' ? prioritizeManufacturerCandidates(values) : values]
+  }))
 }
 
 function safeExplicitCandidate(value, key) {

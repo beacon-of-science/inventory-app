@@ -19,7 +19,7 @@ function selectLine(key,event) { if(event.target.value) emit('select',key,event.
 </script>
 <template>
   <section class="ocr-picker" aria-label="OCR 字段核对">
-    <h4>核对包装信息</h4><p>对照包装核对名称、规格和厂家；不准确时可重新拍摄或手动修改。</p>
+    <h4>核对包装信息</h4><p>对照包装核对名称、规格和厂家；不准确时可重新拍摄或手动修改。厂家优先采用英文企业名，没有合适英文时使用中文。</p>
     <div v-for="(field,key) in fields" :key="key" class="ocr-choice">
       <label>{{ labels[key] }}<output>{{ selected[key] || '尚未填写' }}</output></label>
       <small>{{ hint(key) }}</small>

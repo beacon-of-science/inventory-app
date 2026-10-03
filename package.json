@@ -1,9 +1,9 @@
 {
   "name": "inventory-app",
-  "version": "0.7.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "简库存：离线 Android 库存管理 MVP",
+  "description": "简库存：离线 Android 商品与药品库存管理",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
@@ -28,4 +28,3 @@
     "vite": "^7.0.0"
   }
 }
-

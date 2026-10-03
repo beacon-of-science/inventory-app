@@ -1,10 +1,12 @@
 import { normalizePackagingText } from '../core/packaging.js'
+import { preferredManufacturerCandidates } from '../core/manufacturerCandidates.js'
 
 const limits = { name: 80, specification: 120, manufacturer: 120 }
 export function productFieldChoices(field, key) {
   const values = [...(field?.candidates ?? []), ...(field?.suggestions ?? [])]
-  return [...new Map(values.filter(value => typeof value === 'string' && value.trim() && value.length <= limits[key])
+  const choices = [...new Map(values.filter(value => typeof value === 'string' && value.trim() && value.length <= limits[key])
     .map(value => [normalizePackagingText(value), value])).values()]
+  return key === 'manufacturer' ? preferredManufacturerCandidates(choices) : choices
 }
 
 // Draft fields only: never modifies OCR evidence or marks packaging as verified.
