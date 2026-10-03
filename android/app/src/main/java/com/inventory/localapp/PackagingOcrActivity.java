@@ -47,9 +47,9 @@ public class PackagingOcrActivity extends AppCompatActivity {
         ScrollView scroll=new ScrollView(this);original=new TextView(this);original.setTextColor(-1);original.setTextSize(16);original.setTextIsSelectable(true);original.setPadding(18,8,18,8);scroll.addView(original);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
         capture=new Button(this);capture.setOnClickListener(v->takePicture());root.addView(capture);
         use=new Button(this);use.setText("使用这面文字，返回核对");use.setOnClickListener(v->{if(completed || processing || !PackagingOcrText.valid(capturedText))return;completed=true;setResult(RESULT_OK,new Intent().putExtra("text",capturedText));finish();});root.addView(use);
-        Button cancel=new Button(this);cancel.setText("取消文字识别");cancel.setOnClickListener(v->finish());root.addView(cancel);
+        Button cancel=new Button(this);cancel.setText("取消文字识别");cancel.setOnClickListener(v->cancelCapture());root.addView(cancel);
         setContentView(root);ViewCompat.requestApplyInsets(root);
-        getOnBackPressedDispatcher().addCallback(this,new OnBackPressedCallback(true){@Override public void handleOnBackPressed(){finish();}});
+        getOnBackPressedDispatcher().addCallback(this,new OnBackPressedCallback(true){@Override public void handleOnBackPressed(){cancelCapture();}});
         render("请对准包装，点击拍摄识别");
     }
     private void render(String message) {
@@ -90,6 +90,7 @@ public class PackagingOcrActivity extends AppCompatActivity {
         }catch(Exception e){fail("无法启动摄像头，请重试或手动填写","CAMERA_UNAVAILABLE");}},ContextCompat.getMainExecutor(this));
     }
     private void fail(String message,String code){if(completed)return;completed=true;setResult(RESULT_CANCELED,new Intent().putExtra("error",message).putExtra("code",code));finish();}
+    private void cancelCapture(){if(completed)return;completed=true;setResult(RESULT_CANCELED);finish();}
     @Override protected void onSaveInstanceState(Bundle out){out.putString("text",capturedText);super.onSaveInstanceState(out);}
     @Override protected void onPause(){active=false;generation++;processing=false;cameraCapture=null;if(provider!=null)provider.unbindAll();super.onPause();}
     @Override protected void onDestroy(){active=false;completed=true;generation++;if(provider!=null)provider.unbindAll();if(recognizer!=null)recognizer.close();super.onDestroy();}

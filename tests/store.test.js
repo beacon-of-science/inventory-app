@@ -5,9 +5,9 @@ import { STORAGE_KEY } from '../src/core/storage.js'
 
 function memoryStorage(raw = null) {
   return {
-    raw, writes: 0, failWrites: false,
-    getItem(key) { assert.equal(key, STORAGE_KEY); return this.raw },
-    setItem(key, value) { assert.equal(key, STORAGE_KEY); if (this.failWrites) throw new Error('quota'); this.raw = value; this.writes++ },
+    raw, writes: 0, failWrites: false, auxiliary: new Map(),
+    getItem(key) { return key === STORAGE_KEY ? this.raw : this.auxiliary.get(key) ?? null },
+    setItem(key, value) { if (this.failWrites) throw new Error('quota'); if (key === STORAGE_KEY) { this.raw = value; this.writes++ } else this.auxiliary.set(key, value) },
   }
 }
 const snapshot = store => JSON.parse(JSON.stringify(store.state))

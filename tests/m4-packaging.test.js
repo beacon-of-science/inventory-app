@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {createPackagingCheck,extractPackagingFields} from '../src/core/packaging.js'
 import {createEmptyState,addProduct,updateProduct,recordMovement} from '../src/core/inventory.js'
-import {validateState,loadState} from '../src/core/storage.js'
+import {validateState,loadState,STORAGE_KEY} from '../src/core/storage.js'
 import {exportInventory,parseInventoryImport} from '../src/core/dataTransfer.js'
 import {createInventoryStore} from '../src/store/inventoryStore.js'
 const now='2026-10-02T10:00:00.000Z'
@@ -51,7 +51,8 @@ test('M4 历史快照编辑后不改，最新实例沿用历史且无本次check
 })
 test('M4 原子保存失败与重新加载',()=>{
  let raw=null,fail=false
- const storage={getItem:()=>raw,setItem:(k,v)=>{if(fail)throw Error('quota');raw=v}}
+ const auxiliary=new Map()
+ const storage={getItem:k=>k===STORAGE_KEY?raw:auxiliary.get(k)??null,setItem:(k,v)=>{if(fail)throw Error('quota');if(k===STORAGE_KEY)raw=v;else auxiliary.set(k,v)}}
  const store=createInventoryStore(storage);const p=store.addProduct(product)
  const value={...input([check(full,{...product,id:p.id})]),productId:p.id}
  const snapshot=JSON.stringify(store.state),previous=raw;fail=true
@@ -131,7 +132,8 @@ test('M4 照片参考保护原值、错药及模糊名称拒绝；缺字段继�
 
 test('M4 照片参考保存失败不更新规格企业，重试与重载保留提取结果',()=>{
  let raw=null,fail=false
- const storage={getItem:()=>raw,setItem:(key,value)=>{if(fail)throw Error('disk');raw=value}}
+ const auxiliary=new Map()
+ const storage={getItem:key=>key===STORAGE_KEY?raw:auxiliary.get(key)??null,setItem:(key,value)=>{if(fail)throw Error('disk');if(key===STORAGE_KEY)raw=value;else auxiliary.set(key,value)}}
  const store=createInventoryStore(storage);const p=store.addProduct({...product,specification:'',manufacturer:''})
  const captures=[capture(full)],value={...input([{unitCode:'001',captures,confirmedSameBox:true}]),productId:p.id,referenceFromPackaging:{captures,confirmedSameBox:true}}
  const snapshot=JSON.stringify(store.state),previous=raw;fail=true

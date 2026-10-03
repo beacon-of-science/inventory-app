@@ -1,5 +1,12 @@
 apply plugin: 'com.android.application'
 
+// Release credentials stay outside source control and are supplied only at build time.
+def releaseStoreFile = System.getenv('INVENTORY_RELEASE_STORE_FILE')
+def releaseStorePassword = System.getenv('INVENTORY_RELEASE_STORE_PASSWORD')
+def releaseKeyAlias = System.getenv('INVENTORY_RELEASE_KEY_ALIAS')
+def releaseKeyPassword = System.getenv('INVENTORY_RELEASE_KEY_PASSWORD')
+def releaseSigningReady = [releaseStoreFile, releaseStorePassword, releaseKeyAlias, releaseKeyPassword].every { it?.trim() }
+
 android {
     namespace = "com.inventory.localapp"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -7,8 +14,8 @@ android {
         applicationId "com.inventory.localapp"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 11
-        versionName "0.6.1"
+        versionCode 12
+        versionName "0.7.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,11 +23,28 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        if (releaseSigningReady) {
+            inventoryRelease {
+                storeFile file(releaseStoreFile)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
     buildTypes {
         release {
+            if (releaseSigningReady) signingConfig signingConfigs.inventoryRelease
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
+    }
+}
+
+gradle.taskGraph.whenReady { graph ->
+    if (!releaseSigningReady && !project.hasProperty('android.injected.signing.store.file') && graph.allTasks.any { it.path in [':app:assembleRelease', ':app:bundleRelease'] }) {
+        throw new GradleException('Release signing is required. Supply INVENTORY_RELEASE_STORE_FILE, INVENTORY_RELEASE_STORE_PASSWORD, INVENTORY_RELEASE_KEY_ALIAS and INVENTORY_RELEASE_KEY_PASSWORD, or use Android Studio Generate Signed APK.')
     }
 }
 

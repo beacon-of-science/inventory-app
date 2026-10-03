@@ -9,4 +9,7 @@ android/app/src/main/assets/public/
 *.apk
 *.jks
 *.keystore
+*.p12
+keystore.properties
+.signing/
 .DS_Store

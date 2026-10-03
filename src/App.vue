@@ -7,16 +7,19 @@ import { normalizeBarcode, findProductByScan, isLowStock, validateScanBatch, nor
 import { createPackagingCheck, extractPackagingFields, getOcrFieldOptions, normalizePackagingText } from './core/packaging.js'
 import { capturePackagingText } from './ocr/packagingOcr.js'
 import { exportInventory, parseInventoryImport } from './core/dataTransfer.js'
-import { exportInventoryFile, importInventoryFile } from './files/inventoryFiles.js'
+import { exportInventoryFile, importInventoryFile, exportDiagnosticFile, exportRawInventoryFile } from './files/inventoryFiles.js'
+import { version as appVersion } from '../package.json'
 
 import { installAndroidBackHandler, minimizeApp } from './navigation/androidNavigation.js'
 import OcrFieldPicker from './components/OcrFieldPicker.vue'
 import { autofillProductDraft } from './ocr/productAutofill.js'
 import { chooseBackAction } from './navigation/backNavigation.js'
 import HomePager from './components/HomePager.vue'
+import SettingsPanel from './components/SettingsPanel.vue'
+import RecoveryPreview from './components/RecoveryPreview.vue'
 const store = createInventoryStore()
 const pagerMotion = ref({ progress: 0, duration: 220 })
-const pagerBlocked = computed(() => productSheet.value || movementSheet.value || detailSheet.value || unknownSheet.value || importSheet.value || backupSheet.value || dialogOpen.value || scanning.value || batchScanning.value || ocrBusy.value || productOcrBusy.value || transferBusy.value || submitting.value)
+const pagerBlocked = computed(() => productSheet.value || movementSheet.value || detailSheet.value || unknownSheet.value || importSheet.value || recoverySheet.value || backupSheet.value || dialogOpen.value || scanning.value || batchScanning.value || ocrBusy.value || productOcrBusy.value || transferBusy.value || submitting.value)
 const pageStates = reactive(Object.fromEntries(['products','stock','history'].map(page => [page, { search: '', categoryFilter: 'all', lowStockOnly: false, filtersOpen: false }])))
 function activePageField(field) {
   return computed({ get: () => pageStates[tab.value][field], set: value => { pageStates[tab.value][field] = value } })
@@ -29,13 +32,13 @@ function navigateTo(next) {
   tab.value = next; lastRootBack = 0
 }
 function handleBack() {
-  const action = chooseBackAction({dialog:dialogOpen.value,importPreview:importSheet.value,
+  const action = chooseBackAction({dialog:dialogOpen.value,importPreview:importSheet.value || recoverySheet.value,
     busy:scanning.value || batchScanning.value || ocrBusy.value || productOcrBusy.value || submitting.value || transferBusy.value,
     product:productSheet.value,movement:movementSheet.value,detail:detailSheet.value,unknown:unknownSheet.value,backup:backupSheet.value,
     filters:filtersOpen.value,search:search.value,tab:tab.value})
   if (action !== 'root') lastRootBack = 0
   if (action === 'dialog') closeDialog()
-  else if (action === 'import') cancelImport()
+  else if (action === 'import') recoverySheet.value ? cancelRecovery() : cancelImport()
   else if (action === 'wait') notify('请先完成或取消当前操作')
   else if (action === 'product') productSheet.value = false
   else if (action === 'movement') movementSheet.value = false
@@ -49,8 +52,10 @@ function handleBack() {
   else { lastRootBack = Date.now(); notify('再按一次返回键退出到后台') }
 }
 function escapeBack(event) { if (event.key === 'Escape') { event.preventDefault(); handleBack() } }
-onMounted(() => { stopAndroidBack = installAndroidBackHandler(handleBack); window.addEventListener('keydown',escapeBack) })
-onUnmounted(() => { stopAndroidBack(); window.removeEventListener('keydown',escapeBack) })
+function recordUnexpected() { store.recordDiagnostic('UNEXPECTED_ERROR') }
+watch(() => store.settings.reduceMotion, value => document.documentElement.classList.toggle('reduced-motion', value), { immediate: true })
+onMounted(() => { stopAndroidBack = installAndroidBackHandler(handleBack); window.addEventListener('keydown',escapeBack); window.addEventListener('error',recordUnexpected); window.addEventListener('unhandledrejection',recordUnexpected) })
+onUnmounted(() => { stopAndroidBack(); window.removeEventListener('keydown',escapeBack); window.removeEventListener('error',recordUnexpected); window.removeEventListener('unhandledrejection',recordUnexpected); document.documentElement.classList.remove('reduced-motion') })
 const tab = ref('products')
 const search = activePageField('search')
 const historyFilter = ref('all')
@@ -68,7 +73,11 @@ const unknownSheet = ref(false)
 const transferBusy = ref(false)
 const importSheet = ref(false)
 const backupSheet = ref(false)
+const recoverySheet = ref(false)
+const recoveryPreview = ref(null)
+const replacePreserved = ref(false)
 const importPreview = ref(null)
+const importRecovery = ref(false)
 const productForm = ref({ productType: 'unknown', trackingMode: 'quantity', specification: '', manufacturer: '', name: '', sku: '', barcode: '', category: '', lowStockThreshold: '', unit: '件', note: '' })
 const movementForm = ref({ productId: '', type: 'in', quantity: '', note: '' })
 const movementMode = ref('manual')
@@ -117,7 +126,7 @@ async function captureProductFace() {
     const draft = autofillProductDraft(productForm.value, productOcrFields.value, productOcrAutomatic.value)
     productForm.value = draft.values; productOcrAutomatic.value = draft.automatic
     notify('唯一候选已填入，请对照包装核对')
-  } catch(error) { formError.value = error.message }
+  } catch(error) { store.recordDiagnostic('OCR_FAILED'); formError.value = error.message }
   finally { productOcrBusy.value = false }
 }
 function resetProductOcr() {
@@ -138,7 +147,7 @@ async function captureIntakeFace() {
     if (intakeUnitCode.value) { packagingCaptures.value[intakeUnitCode.value] = [...intakeCaptures.value]; sameBoxConfirmed.value[intakeUnitCode.value] = false; ocrUnitCode.value = intakeUnitCode.value }
     allowIncomplete.value = false
     notify('已提取，可翻面补拍')
-  } catch(error) { movementError.value = error.message }
+  } catch(error) { store.recordDiagnostic('OCR_FAILED'); movementError.value = error.message }
   finally { ocrBusy.value = false }
 }
 function bindIntakeToFirstCode() {
@@ -195,7 +204,7 @@ async function captureBoxFace() {
     packagingCaptures.value[code] = [...(packagingCaptures.value[code] || []), capture]
     sameBoxConfirmed.value[code] = false; allowIncomplete.value = false
     notify('这面文字已绑定当前单件码，可翻面继续采集')
-  } catch(error) { movementError.value = error.message || 'OCR 失败，请重新拍摄。' }
+  } catch(error) { store.recordDiagnostic('OCR_FAILED'); movementError.value = error.message || 'OCR 失败，请重新拍摄。' }
   finally { ocrBusy.value = false }
 }
 const batchCodes = computed(() => batchCodeText.value.split(/\r?\n/).map(code => code.trim()).filter(Boolean))
@@ -267,7 +276,7 @@ async function scanMovementBatch() {
       movementForm.value.quantity = String(result.quantity)
       notify('数量已填入，请核对实物后确认；库存尚未更改')
     }
-  } catch (error) { movementError.value = error.message || '扫描失败，请重试。' }
+  } catch (error) { store.recordDiagnostic('SCAN_FAILED'); movementError.value = error.message || '扫描失败，请重试。' }
   finally { batchScanning.value = false }
 }
 const storageError = computed(() => unref(store.error) || '')
@@ -337,6 +346,7 @@ async function startScan(target = 'lookup') {
       unknownSheet.value = true
     }
   } catch (error) {
+    store.recordDiagnostic('SCAN_FAILED')
     notify(error.message || '扫码失败，请重试或手动输入条码。')
   } finally {
     scanning.value = false
@@ -447,39 +457,97 @@ async function exportData() {
   transferBusy.value = true
   try {
     const result = await exportInventoryFile(exportInventory(store.state))
-    notify(result?.cancelled ? '已取消导出' : '库存数据已导出为 JSON 文件')
-  } catch (error) { notify(error.message || '导出失败，请重试。') }
+    if (!result?.cancelled && result.confirmed !== false) store.markManualBackupExported()
+    notify(result?.cancelled ? '已取消导出' : result.confirmed === false ? '已发起下载，请检查浏览器是否保存；尚未记录为成功备份。' : '库存数据已导出为 JSON 文件')
+  } catch (error) { store.recordDiagnostic('EXPORT_FAILED'); notify(error.message || '导出失败，请重试。') }
   finally { transferBusy.value = false }
 }
-async function prepareImport() {
-  if (transferBusy.value || scanning.value || storageError.value) return
+async function prepareImport(recover = false) {
+  if (transferBusy.value || scanning.value || (storageError.value && !recover)) return
   transferBusy.value = true
   try {
     const content = await importInventoryFile()
     if (content === null) { notify('已取消导入'); transferBusy.value = false; return }
     importPreview.value = parseInventoryImport(content)
+    replacePreserved.value = false
+    importRecovery.value = !!storageError.value && recover
     importSheet.value = true
-  } catch (error) { notify(error.message || '导入文件无效，当前数据未更改。'); transferBusy.value = false }
+  } catch (error) { store.recordDiagnostic('IMPORT_FAILED'); notify(error.message || '导入文件无效，当前数据未更改。'); transferBusy.value = false }
 }
 function cancelImport() {
   importSheet.value = false
   importPreview.value = null
+  importRecovery.value = false
   transferBusy.value = false
 }
 function confirmImport() {
-  if (!importPreview.value || storageError.value) return
+  if (!importPreview.value || (storageError.value && !importRecovery.value)) return
   try {
-    store.importState(importPreview.value)
+    if (storageError.value && importRecovery.value) store.restoreImportedState(importPreview.value, { replacePreserved: replacePreserved.value })
+    else store.importState(importPreview.value)
     detailSheet.value = false
     resetFilters()
     notify('导入成功，当前商品和出入库记录已替换')
   } catch (error) { notify(error.message || '导入失败，当前数据未更改。') }
   finally { cancelImport() }
 }
+function updateSettings(patch) {
+  try { store.updateSettings(patch) }
+  catch (error) { notify(error.message || '设置未保存，请重试。') }
+}
+function createRecoveryPoint() {
+  if (transferBusy.value || storageError.value) return
+  try { store.createRecoveryPoint(); notify('恢复点已保存') }
+  catch (error) { notify(error.message || '恢复点保存失败，当前数据未更改。') }
+}
+function previewRecoveryPoint(id) {
+  if (transferBusy.value) return
+  try {
+    recoveryPreview.value = store.previewRecoveryPoint(id)
+    replacePreserved.value = false
+    recoverySheet.value = true
+  } catch (error) { notify(error.message || '恢复点无法读取，当前数据未更改。') }
+}
+function cancelRecovery() { recoverySheet.value = false; recoveryPreview.value = null }
+function confirmRecovery() {
+  if (!recoveryPreview.value || transferBusy.value) return
+  transferBusy.value = true
+  try {
+    store.restoreRecoveryPoint(recoveryPreview.value.id, { replacePreserved: replacePreserved.value })
+    detailSheet.value = false
+    resetFilters()
+    notify('恢复成功，当前商品和记录已替换')
+    cancelRecovery()
+  } catch (error) { notify(error.message || '恢复失败，当前数据未更改。') }
+  finally { transferBusy.value = false }
+}
+async function exportRawData(preserved = false) {
+  if (transferBusy.value) return
+  transferBusy.value = true
+  try {
+    const content = preserved ? store.exportPreservedRawData() : store.exportRawData()
+    if (content === null) { notify('没有可导出的原始数据'); return }
+    const archive = JSON.stringify({ format: 'inventory-app-raw', version: 1, exportedAt: new Date().toISOString(), raw: content })
+    const result = await exportRawInventoryFile(archive)
+    if (!result?.cancelled && result.confirmed !== false) store.recordDiagnostic('EXPORT_SUCCEEDED')
+    notify(result?.cancelled ? '已取消导出' : result.confirmed === false ? '已发起原文下载，请检查保存结果。' : '原始数据已导出，未修改本机记录')
+  } catch (error) { store.recordDiagnostic('EXPORT_FAILED'); notify(error.message || '原始数据导出失败，请重试。') }
+  finally { transferBusy.value = false }
+}
+async function exportDiagnostics() {
+  if (transferBusy.value) return
+  transferBusy.value = true
+  try {
+    const result = await exportDiagnosticFile(JSON.stringify(store.getDiagnosticReport(), null, 2))
+    if (!result?.cancelled && result.confirmed !== false) store.recordDiagnostic('EXPORT_SUCCEEDED')
+    notify(result?.cancelled ? '已取消导出' : result.confirmed === false ? '已发起日志下载，请检查保存结果。' : '诊断日志已导出')
+  } catch (error) { store.recordDiagnostic('EXPORT_FAILED'); notify(error.message || '诊断日志导出失败，请重试。') }
+  finally { transferBusy.value = false }
+}
 </script>
 
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :class="{ 'reduced-motion': store.settings.reduceMotion }">
     <aside class="desktop-rail">
       <a class="brand" href="#" @click.prevent="navigateTo('products')" aria-label="简库存首页">
         <span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" stroke="currentColor" stroke-width="1.7"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9m-4-16.2 8 4.5" stroke="currentColor" stroke-width="1.7"/></svg></span>
@@ -492,21 +560,23 @@ function confirmImport() {
     </aside>
 
     <div class="main-layout">
-      <header class="mobile-brand"><span class="mini-mark"><van-icon name="apps-o" /></span><span>简库存</span><button class="backup-entry" aria-label="打开数据备份" @click="backupSheet = true"><van-icon name="shield-o" />备份</button></header>
-      <HomePager :model-value="tab" :blocked="pagerBlocked" @navigate="navigateTo" @motion="pagerMotion = $event"><template #default="{ page }"><main class="refined-main">
+      <header class="mobile-brand"><span class="mini-mark"><van-icon name="apps-o" /></span><span>简库存</span><button class="backup-entry" aria-label="打开设置与备份" @click="backupSheet = true"><van-icon name="setting-o" />设置</button></header>
+      <button v-if="store.recovery.warning && !storageError" class="recovery-status" @click="backupSheet = true"><van-icon name="warning-o" />本机备份需要检查 · 打开设置查看</button>
+      <HomePager :model-value="tab" :blocked="pagerBlocked" :reduce-motion="store.settings.reduceMotion" @navigate="navigateTo" @motion="pagerMotion = $event"><template #default="{ page }"><main class="refined-main">
         <div class="page-heading">
-          <div><h1>{{ pageTitles[page] }}</h1><p class="page-subtitle">{{ pageDescriptions[page] }}</p></div><button class="backup-entry desktop-backup" aria-label="打开数据备份" @click="backupSheet = true"><van-icon name="shield-o" />数据备份</button>
+          <div><h1>{{ pageTitles[page] }}</h1><p class="page-subtitle">{{ pageDescriptions[page] }}</p></div><button class="backup-entry desktop-backup" aria-label="打开设置与备份" @click="backupSheet = true"><van-icon name="setting-o" />设置与备份</button>
           <button v-if="page === 'products' && products.length" class="button button-primary desktop-add" :disabled="!!storageError || transferBusy" @click="openProduct()"><van-icon name="plus" />新增商品</button>
           <div v-if="page === 'stock'" class="heading-actions"><button class="button button-secondary" :disabled="!!storageError || transferBusy || !products.length" @click="openMovement('out')"><van-icon name="minus" />出库</button><button class="button button-primary" :disabled="!!storageError || transferBusy || !products.length" @click="openMovement('in')"><van-icon name="plus" />入库</button></div>
         </div>
 
-        <div v-if="storageError" class="storage-alert" role="alert"><van-icon name="warning-o" /><div><strong>暂时无法使用本机数据</strong><p>{{ storageError }}</p><p>为保护现有记录，新增、修改和出入库暂不可用。</p></div></div>
+        <div v-if="storageError" class="storage-alert" role="alert"><van-icon name="warning-o" /><div><strong>暂时无法使用本机数据</strong><p>{{ storageError }}</p><p>为保护现有记录，新增、修改和出入库暂不可用。</p><button class="button button-secondary" @click="backupSheet = true">查看恢复选项</button></div></div>
 
         <section v-if="page !== 'history' && products.length" class="inventory-strip" aria-label="库存概览"><div><span>商品</span><strong>{{ products.length }}</strong><small>种</small></div><div><span>有库存</span><strong>{{ inStockCount }}</strong><small>种</small></div><button :class="{ warning: lowStockCount, active: pageStates[page].lowStockOnly }" :aria-pressed="pageStates[page].lowStockOnly" aria-label="切换低库存筛选" @click="pageStates[page].lowStockOnly = !pageStates[page].lowStockOnly"><span>低库存</span><strong>{{ lowStockCount }}</strong><small>种</small><van-icon name="arrow" /></button></section>
         <section v-if="page === 'products' || page === 'stock'" class="content-panel">
           <div class="panel-toolbar"><h2>{{ page === 'products' ? '商品列表' : '库存清单' }}<span>{{ pageProducts[page].length }}</span></h2><div class="lookup-tools"><button class="button button-secondary scan-lookup" :disabled="scanning || !!storageError || transferBusy" :aria-busy="scanning" aria-label="扫码查找商品" @click="startScan()"><van-icon name="scan" />{{ scanning ? '扫码中…' : '扫码' }}</button><div v-if="products.length" class="search-field"><van-icon name="search" /><input v-model="pageStates[page].search" type="search" aria-label="搜索商品名称、编号、条码或分类" placeholder="搜索商品、编号或条码" /><button v-if="pageStates[page].search" class="search-clear" aria-label="清空搜索" @click="pageStates[page].search = ''"><van-icon name="cross" /></button></div></div></div>
           <details v-if="products.length" class="catalog-filter-drawer" :open="pageStates[page].filtersOpen" @toggle="pageStates[page].filtersOpen = $event.target.open"><summary><van-icon name="filter-o" />筛选<span>{{ pageStates[page].categoryFilter === 'all' ? '全部分类' : pageStates[page].categoryFilter === 'uncategorized' ? '未分类' : pageStates[page].categoryFilter.slice(9) }}{{ pageStates[page].lowStockOnly ? ' · 低库存' : '' }}</span><van-icon name="arrow-down" /></summary><div class="catalog-filters"><label>分类<select v-model="pageStates[page].categoryFilter" aria-label="筛选商品分类"><option value="all">全部分类</option><option value="uncategorized">未分类</option><option v-for="category in categories" :key="category" :value="'category:' + category">{{ category }}</option></select></label><label class="low-stock-toggle"><input v-model="pageStates[page].lowStockOnly" type="checkbox" />只看低库存</label><button v-if="pageStates[page].search || pageStates[page].categoryFilter !== 'all' || pageStates[page].lowStockOnly" class="text-button" @click="resetFilters(page)">重置筛选</button></div></details>
-          <div v-if="!products.length" class="empty-state"><div class="empty-illustration"><svg viewBox="0 0 100 100" fill="none" aria-hidden="true"><rect x="17" y="33" width="66" height="49" rx="9" fill="#e8f2f3"/><path d="M19 36 50 20l31 16-31 17-31-17Z" fill="#d0e6e7"/><path d="M50 53v28M34 29l31 17" stroke="#7baeb0" stroke-width="2"/><rect x="60" y="64" width="25" height="25" rx="12.5" fill="#1d8a7a"/><path d="M72.5 70v13m-6.5-6.5h13" stroke="white" stroke-width="2" stroke-linecap="round"/></svg></div><h3>从第一件商品开始</h3><p>添加商品信息，再记录入库数量。<br />商品和库存变化会保存在这台设备上。</p><button class="button button-primary" :disabled="!!storageError || transferBusy" @click="openProduct()"><van-icon name="plus" />添加第一件商品</button></div>
+          <div v-if="storageError" class="empty-state compact"><van-icon name="shield-o" class="empty-icon" /><h3>现有记录已暂停读取</h3><p>请在设置中导出原始数据，<br />再从恢复点或备份文件恢复。</p><button class="button button-secondary" @click="backupSheet = true">打开设置与备份</button></div>
+          <div v-else-if="!products.length" class="empty-state"><div class="empty-illustration"><svg viewBox="0 0 100 100" fill="none" aria-hidden="true"><rect x="17" y="33" width="66" height="49" rx="9" fill="#e8f2f3"/><path d="M19 36 50 20l31 16-31 17-31-17Z" fill="#d0e6e7"/><path d="M50 53v28M34 29l31 17" stroke="#7baeb0" stroke-width="2"/><rect x="60" y="64" width="25" height="25" rx="12.5" fill="#1d8a7a"/><path d="M72.5 70v13m-6.5-6.5h13" stroke="white" stroke-width="2" stroke-linecap="round"/></svg></div><h3>从第一件商品开始</h3><p>添加商品信息，再记录入库数量。<br />商品和库存变化会保存在这台设备上。</p><button class="button button-primary" :disabled="!!storageError || transferBusy" @click="openProduct()"><van-icon name="plus" />添加第一件商品</button></div>
           <div v-else-if="!pageProducts[page].length" class="empty-state compact"><van-icon name="search" class="empty-icon" /><h3>没有找到相关商品</h3><p>调整搜索、分类或低库存筛选试试。</p><button class="text-button" @click="resetFilters(page)">重置筛选</button></div>
           <div v-else class="product-list">
             <div class="list-column-labels"><span>商品信息</span><span>当前库存</span><span>{{ page === 'stock' ? '库存操作' : '' }}</span></div>
@@ -531,7 +601,8 @@ function confirmImport() {
     </div>
 
 
-    <van-popup v-model:show="backupSheet" position="bottom" round closeable :close-on-click-overlay="!transferBusy" :closeable="!transferBusy" class="sheet-popup backup-popup" aria-label="数据备份"><header class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><h2>数据备份</h2><p>把商品、库存和完整记录保存到文件。</p></header><div class="backup-body"><section class="transfer-bar" aria-label="数据导入导出"><div><strong>数据导入 / 导出</strong><span>JSON 文件 · 商品与完整流水</span></div><div class="transfer-actions"><button class="button button-secondary" :disabled="!!storageError || scanning || transferBusy" @click="exportData">导出 JSON</button><button class="button button-secondary" :disabled="!!storageError || scanning || transferBusy" @click="prepareImport">导入 JSON</button></div><p v-if="transferBusy" role="status">{{ importSheet ? '请确认或取消导入' : '正在处理文件…' }}</p></section><p class="backup-notice"><van-icon name="info-o" />数据只保存在这台设备。卸载或清除应用数据前，请先导出备份；导入文件会替换当前数据，确认前可以预览。</p></div></van-popup>
+    <van-popup v-model:show="backupSheet" position="bottom" round :close-on-click-overlay="!transferBusy" :closeable="!transferBusy" class="sheet-popup settings-popup" aria-label="设置与备份"><header class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><h2>设置与备份</h2><p>本机数据、文件备份与恢复。</p></header><SettingsPanel :version="appVersion" :settings="store.settings" :recovery="store.recovery" :storage-error="storageError" :busy="transferBusy || scanning" @update-settings="updateSettings" @export="exportData" @import="prepareImport(false)" @recover-import="prepareImport(true)" @create-point="createRecoveryPoint" @preview-point="previewRecoveryPoint" @export-raw="exportRawData(false)" @export-preserved="exportRawData(true)" @export-diagnostics="exportDiagnostics" /></van-popup>
+    <van-popup v-model:show="recoverySheet" position="bottom" round :closeable="!transferBusy" :close-on-click-overlay="!transferBusy" class="sheet-popup" aria-label="确认恢复本机数据" @closed="cancelRecovery"><header class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><h2>恢复点预览</h2><p>确认覆盖前，请核对恢复时间与记录数量。</p></header><RecoveryPreview v-if="recoveryPreview" :point="recoveryPreview" v-model:replace-preserved="replacePreserved" :preserved-raw="store.recovery.preservedRawAvailable" :current="{ products: products.length, movements: movements.length, units: units.length }" :storage-error="storageError" :busy="transferBusy" @cancel="cancelRecovery" @confirm="confirmRecovery" /></van-popup>
     <nav class="bottom-nav" :style="{'--page-progress': pagerMotion.progress, '--motion-duration': pagerMotion.duration + 'ms'}" aria-label="底部导航"><span class="nav-indicator" aria-hidden="true"></span><button v-for="item in [{ id: 'products', label: '商品', icon: 'apps-o' }, { id: 'stock', label: '库存', icon: 'orders-o' }, { id: 'history', label: '记录', icon: 'clock-o' }]" :key="item.id" :class="{ active: tab === item.id }" @click="navigateTo(item.id)" :aria-current="tab === item.id ? 'page' : undefined"><van-icon :name="item.icon" /><span>{{ item.label }}</span></button></nav>
 
     <van-popup v-model:show="productSheet" position="bottom" round :closeable="!productOcrBusy && !scanning" class="sheet-popup" :close-on-click-overlay="false" aria-label="商品信息表单">
@@ -595,7 +666,7 @@ function confirmImport() {
       </form>
     </van-popup>
 
-    <van-popup v-model:show="importSheet" position="bottom" round closeable class="sheet-popup" aria-label="确认导入库存数据" @closed="cancelImport"><div class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><h2>确认覆盖当前数据</h2><p>导入会替换本机全部商品和出入库记录，不会与当前数据合并。请先导出当前数据留存。</p></div><div v-if="importPreview" class="detail-body"><div class="import-counts"><div><span>将导入</span><strong>{{ importPreview.products.length }} 种商品 · {{ importPreview.movements.length }} 笔记录 · {{ importPreview.units?.length || 0 }} 个单件档案</strong></div><div><span>当前本机</span><strong>{{ products.length }} 种商品 · {{ movements.length }} 笔记录</strong></div></div><p class="import-warning">确认后当前数据将被完整替换；取消不会更改任何记录。</p><div class="form-actions"><button class="button button-secondary" @click="cancelImport">取消导入</button><button class="button button-danger" :disabled="!!storageError" @click="confirmImport">确认覆盖并导入</button></div></div></van-popup>
+    <van-popup v-model:show="importSheet" position="bottom" round closeable class="sheet-popup" aria-label="确认导入库存数据" @closed="cancelImport"><div class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><h2>{{ importRecovery ? '从文件恢复本机数据' : '确认覆盖当前数据' }}</h2><p>{{ importRecovery ? '当前原始内容会先另存保护，再用此备份文件恢复；保护失败时不会覆盖。' : '导入会替换本机全部商品和出入库记录，不会与当前数据合并。请先导出当前数据留存。' }}</p></div><div v-if="importPreview" class="detail-body"><div class="import-counts"><div><span>{{ importRecovery ? '将恢复' : '将导入' }}</span><strong>{{ importPreview.products.length }} 种商品 · {{ importPreview.movements.length }} 笔记录 · {{ importPreview.units?.length || 0 }} 个单件档案</strong></div><div><span>当前本机</span><strong v-if="importRecovery">原始数据读取异常，无法可靠统计</strong><strong v-else>{{ products.length }} 种商品 · {{ movements.length }} 笔记录</strong></div></div><p class="import-warning">确认后当前数据将被完整替换；取消不会更改任何记录。</p><label v-if="importRecovery && store.recovery.preservedRawAvailable" class="archive-confirm"><input type="checkbox" v-model="replacePreserved" />我已导出并留存之前的异常原文，同意用本次原文替换本机保护副本（仅保留一份）。</label><div class="form-actions"><button class="button button-secondary" @click="cancelImport">{{ importRecovery ? '取消恢复' : '取消导入' }}</button><button class="button button-danger" :disabled="(!!storageError && !importRecovery) || (importRecovery && store.recovery.preservedRawAvailable && !replacePreserved)" @click="confirmImport">{{ importRecovery ? '确认保护原文并恢复' : '确认覆盖并导入' }}</button></div></div></van-popup>
     <van-popup v-model:show="unknownSheet" position="bottom" round closeable class="sheet-popup" aria-label="未找到条码对应商品">
       <div class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><h2>尚未登记这个条码</h2><p>本机商品中没有对应条码。你可以建立商品档案，库存不会自动变化。已有商品请取消后打开商品详情，在编辑中绑定条码。</p></div>
       <div class="detail-body"><div class="unknown-barcode"><span>扫描结果</span><strong>{{ unknownBarcode }}</strong></div><div class="form-actions"><button type="button" class="button button-secondary" @click="unknownSheet = false">取消</button><button type="button" class="button button-primary" :disabled="!!storageError || transferBusy" @click="addScannedProduct">新增商品并填入条码</button></div></div>

@@ -1,12 +1,37 @@
-# 简库存 · Android 库存管理 M4 + 首页精修
+# 简库存 · Android 库存管理 M5
 
 一个使用 **Vue 3 + JavaScript + Vant + Capacitor** 开发的本地库存 App。首次打开为空数据，可以从新增商品开始使用。所有页面及资源随 APK 打包，业务不依赖服务器。
 
 ## 手机安装包
 
-[下载 Android APK](https://github.com/beacon-of-science/inventory-app/releases/download/v0.6.1/inventory-app-debug.apk) · [Releases 发布页](https://github.com/beacon-of-science/inventory-app/releases/tag/v0.6.1)
+[下载 Android APK](https://github.com/beacon-of-science/inventory-app/releases/download/v0.7.0/inventory-app-debug.apk) · [Releases 发布页](https://github.com/beacon-of-science/inventory-app/releases/tag/v0.7.0)
 
-这是 Debug 测试版，支持 Android 7.0 及以上。手机安装与使用不需要安装 Node.js；下面的 Node.js 步骤仅用于修改源码和重新打包。
+主下载为 Debug 升级版，保留原开发签名，可覆盖现有版本。另提供 [正式签名 APK](https://github.com/beacon-of-science/inventory-app/releases/download/v0.7.0/inventory-app-release.apk)，适合新安装；它与 Debug 签名不同，不能直接覆盖 Debug。要迁移到正式版，应先导出并检查备份，再自行卸载 Debug、安装正式版、导入核对数据。两种包均支持 Android 7.0 及以上。手机安装与使用不需要安装 Node.js；下面的 Node.js 步骤仅用于修改源码和重新打包。
+
+## v0.7.0 M5 工程化收尾
+
+主代理整合项目，GPT-6 Astra 负责恢复与诊断架构，GPT-6.1 Sol 分别实现设置界面及 Android 文件/相机异常处理，另由 Astra 做独立审查。审查发现的重复原文覆盖、浏览器导出误记成功及弹窗减少动画范围问题均已修复。v0.6.1 OCR 已获得用户在红魔 8S Pro 上的正向复测反馈；M5 的 Android 真机验收仍待完成。
+
+- 右上角“设置”统一管理备份、恢复、版本、帮助和减少动画；系统的减少动态效果设置继续优先生效。
+- 每次成功保存库存后自动保存恢复点，可关闭自动保存或手动保存；最近 5 点保留商品、流水、单件与包装文字。恢复先预览数量，再明确确认，正常当前数据先存保护点，保护失败不覆盖。
+- 启动数据损坏时保持只读，可导出异常原文归档、从有效恢复点或库存备份文件救回。恢复前必须成功保护原始内容。异常原文只保留一份；已有不同副本时默认阻止替换，必须先导出留存并勾选明确确认。原文归档封装为 inventory-app-raw，不能作为普通库存备份导入。
+- 自动恢复点失败不撤销已经成功的库存操作，首页和设置显示备份警告。恢复点与库存共用本机存储空间，空间不足可能导致新增恢复点被暂停；请及时导出文件。本机恢复点不能抵御卸载或清除应用数据。
+- Android 文件保存成功后记录上次备份时间；取消不记录，失败可重试。开发浏览器仅能确认发起下载，提示自行检查文件，不记为成功备份。
+- 脱敏诊断保留最近 80 条固定结果代码与时间，不含商品名称、条码、照片、识别原文或异常正文；不上传。相机/文件旧回调、重复回调不会误完成新的操作。
+- 大批量扫码通过有界、校验过的本机缓存和小标识恢复，避免把上万条码塞入 Android 保存状态或结果 Intent。缓存丢失/损坏明确取消，不提交库存。系统文件保存期间若进程被终止，需要重新导出；可能留有未完成文件，不报告成功。
+
+271 项 JavaScript 测试全部通过；Debug 与 Release 各执行同一套 32 项 Android 单元测试全部通过。两种 APK 已构建并验证签名、对齐、版本和网页资源一致性。手机尺寸浏览器验证设置持久化、恢复预览/取消/覆盖及恢复前保护，不能代替真机相机、系统文件选择器或触摸帧率实测。
+
+### M5 手机复测
+
+先在现有 App 导出备份，再覆盖安装本页 Debug 升级包；不要为测试清除应用数据。
+
+1. 确认旧商品、库存、历史、单件码及 OCR 原文均保留。
+2. 使用测试商品，先手动保存恢复点，再入库 2 件；恢复预览取消应不改数据，确认恢复应回到原数量，恢复前保护点能找回那 2 件。
+3. 导出 JSON 到手机，取消另一次导出后重试；成功时间只随实际成功保存更新。重新导入有效备份，先取消预览，再确认并核对库存及包装原文。非法文件应不改数据。
+4. 开启减少动画，关闭重开仍保留；逐层按返回、轻滑及快速点底栏仍正常。设置中导出诊断，查看只有代码和时间。
+5. 拍包装/扫码时取消、切后台、锁屏后返回，再次打开相机；拒绝权限后允许重试。均不得自行增加库存或重复提交。
+6. 文件选择器期间切后台、旋转或被系统终止后，重新打开检查库存，再重新导出并检查文件完整。完成回归入库、出库、回库和多面 OCR。
 
 ## v0.6.1 OCR 候选自动填表
 
@@ -14,7 +39,7 @@
 
 支持「每片12.5mg，内装14片」「每粒0.25g；内装24粒」等含量和包装描述，保留原文数字，不推测破损剂量。填写草稿不等于包装核对通过，原文、同盒确认、冲突拦截与历史规则保持。入库流程仍根据已有参考和原文核对；本轮只调整商品建档的自动填写。
 
-245 项 JavaScript 测试覆盖唯一候选、多个候选、补拍冲突、手动保护、清除重拍及描述性规格；实际药盒拍摄识别仍需在手机复测。
+245 项 JavaScript 测试覆盖唯一候选、多个候选、补拍冲突、手动保护、清除重拍及描述性规格；该版本的实际药盒 OCR 已获用户正向复测反馈。
 
 ## v0.6.0 界面与动画统一
 
@@ -98,7 +123,7 @@ M3 已支持普通商品的手动数量、连续单件扫描和同画面多码�
 
 新增或编辑商品时填写分类，并按需设置低库存阈值。在商品、库存页可按分类筛选或只看低库存商品；提醒只在 App 界面展示，不发送系统通知。
 
-点击「数据导入/导出」导出 JSON 文件，选择手机保存位置。导入同类文件时先校验格式、版本、商品唯一性与库存流水一致性，再展示数量并要求确认覆盖当前全部商品和记录。取消、非法文件或保存失败均保留原数据；单文件上限 5 MiB。导出的文件包含商品和历史信息，请保管在自己选择的位置。此功能用于手动数据转移，尚未提供自动备份、合并导入或云同步。
+点击「数据导入/导出」导出 JSON 文件，选择手机保存位置。导入同类文件时先校验格式、版本、商品唯一性与库存流水一致性，再展示数量并要求确认覆盖当前全部商品和记录。取消、非法文件或保存失败均保留原数据；单文件上限 5 MiB。导出的文件包含商品和历史信息，请保管在自己选择的位置。文件用于手动数据转移；M5 另外提供本机自动恢复点，不支持合并导入或云同步。
 
 旧版本商品缺少分类和阈值时，升级后按「未分类、提醒关闭」处理，不修改库存。请覆盖安装，不要卸载或清除应用数据。
 
@@ -169,9 +194,15 @@ cd android
 
 macOS/Linux 使用 `./gradlew assembleDebug`，必要时先执行 `chmod +x gradlew`。
 
-应用 ID 为 `com.inventory.localapp`，最低 Android 7.0（API 24），目标 API 36。交付的 Debug APK 使用开发签名，适用于测试安装；正式发行需另行配置 Release 签名。安装时 Android 可能要求允许当前文件管理器安装未知来源应用。
+应用 ID 为 `com.inventory.localapp`，最低 Android 7.0（API 24），目标 API 36。交付的 Debug APK 使用开发签名，适用于测试安装；本次另外交付独立正式签名 Release APK。后续覆盖升级必须使用相同证书，参见 [Android 签名规则](https://developer.android.com/studio/publish/app-signing)。签名私钥与凭据不提交 GitHub。安装时 Android 可能要求允许当前文件管理器安装未知来源应用。
 
 旧设备请将 Android System WebView 更新到可用的新版本；最低系统版本并不代表原厂自带的旧网页内核支持所有界面功能。
+
+### 构建正式签名包
+
+先运行 npm run android:sync。Android Studio 选择 Build → Generate Signed Bundle / APK → APK，使用自己妥善保管的 keystore；不要提交私钥、密码或本机路径。终端构建可设置 INVENTORY_RELEASE_STORE_FILE、INVENTORY_RELEASE_STORE_PASSWORD、INVENTORY_RELEASE_KEY_ALIAS、INVENTORY_RELEASE_KEY_PASSWORD 四个环境变量，然后在 android 目录执行 gradlew.bat assembleRelease。缺少签名配置会明确停止正式构建，不用 Debug 签名冒充 Release。输出为 android/app/build/outputs/apk/release/app-release.apk。
+
+仓库不附交付私钥，克隆者须使用自己的密钥；自建包不能保证覆盖交付包。本机已保管本次签名材料供后续同证书升级，需另行安全备份。
 
 ## 使用示例
 
@@ -192,6 +223,9 @@ src/style.css               手机与桌面样式
 src/core/inventory.js        无浏览器依赖的库存规则
 src/core/storage.js          localStorage 编解码、迁移和流水一致性校验
 src/core/dataTransfer.js     JSON 文件格式、大小和导入数据校验
+src/core/recovery.js         有界恢复点与损坏原文保护
+src/core/settings.js         本机设置
+src/core/diagnostics.js      固定代码脱敏诊断
 src/files/inventoryFiles.js  系统文件选择器与开发预览适配
 src/store/inventoryStore.js  响应式状态与先保存后提交的操作
 tests/                      Node 自动测试
@@ -258,7 +292,7 @@ v0.5.0 已通过 JavaScript、Android 单元测试、生产资源与 APK 构建�
 | M2 | 摄像头单次扫码定位商品、绑定条码 | 完成；用户报告 v0.2.0 真机全部检查通过 |
 | M3 | 普通商品三种数量方式、唯一单件扫描与实例状态、确认后统一出入库 | 已实现 v0.4.0；用户报告手机烟雾测试通过 |
 | M4 | 同盒多面 OCR、药名/规格/厂家一致性校验与单件证据 | 已实现 v0.5.0，待手机 OCR 复测 |
-| M5 | 自动备份与恢复管理、日志、异常处理、设置、正式签名 APK | 未开始 |
+| M5 | 自动恢复点与文件备份、日志、异常处理、设置、正式签名 APK | 已实现并构建，待真机验收 |
 
 ## 本地数据说明
 

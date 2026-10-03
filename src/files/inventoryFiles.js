@@ -28,16 +28,21 @@ export function createInventoryFiles({ platform, plugin, browser = createBrowser
   function backend() {
     return (typeof platform === 'function' ? platform() : platform) === 'android' ? plugin : browser
   }
+  function exportJsonFile(content, prefix) {
+    return run(async () => {
+      validateContent(content)
+      const fileName = `${prefix}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`
+      const result = await backend().exportFile({ content, fileName })
+      if (!result || typeof result.cancelled !== 'boolean') throw new Error('未获得有效的文件保存结果，请重试')
+      return result.confirmed === false ? { cancelled: result.cancelled, confirmed: false } : { cancelled: result.cancelled }
+    })
+  }
   return {
     exportInventoryFile(content) {
-      return run(async () => {
-        validateContent(content)
-        const fileName = `inventory-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.json`
-        const result = await backend().exportFile({ content, fileName })
-        if (!result || typeof result.cancelled !== 'boolean') throw new Error('未获得有效的文件保存结果，请重试')
-        return { cancelled: result.cancelled }
-      })
+      return exportJsonFile(content, 'inventory-backup')
     },
+    exportDiagnosticFile(content) { return exportJsonFile(content, 'inventory-diagnostics') },
+    exportRawInventoryFile(content) { return exportJsonFile(content, 'inventory-recovery-raw') },
     importInventoryFile() {
       return run(async () => {
         const result = await backend().importFile()
@@ -60,7 +65,8 @@ function createBrowserFileAccess() {
         link.download = fileName
         document.body.appendChild(link)
         link.click()
-        return { cancelled: false }
+        // A download request cannot confirm the user actually saved the file.
+        return { cancelled: false, confirmed: false }
       } finally {
         link.remove()
         // Let the browser consume the URL before revoking it.
@@ -111,4 +117,6 @@ function createBrowserFileAccess() {
 
 const files = createInventoryFiles({ platform: () => Capacitor.getPlatform(), plugin: registerPlugin('InventoryFiles') })
 export const exportInventoryFile = files.exportInventoryFile
+export const exportDiagnosticFile = files.exportDiagnosticFile
+export const exportRawInventoryFile = files.exportRawInventoryFile
 export const importInventoryFile = files.importInventoryFile

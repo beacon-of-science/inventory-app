@@ -11,7 +11,7 @@ function fixture() {
   return recordMovement(state, { productId: 'p1', type: 'in', quantity: 3 }, meta('m1')).state
 }
 function backend(raw = null) {
-  return { raw, writes: 0, fail: false, getItem(key) { assert.equal(key, STORAGE_KEY); return this.raw }, setItem(key, value) { if (this.fail) throw Error('quota'); this.raw = value; this.writes++ } }
+  return { raw, writes: 0, fail: false, auxiliary: new Map(), getItem(key) { return key === STORAGE_KEY ? this.raw : this.auxiliary.get(key) ?? null }, setItem(key, value) { if (this.fail) throw Error('quota'); if (key === STORAGE_KEY) { this.raw = value; this.writes++ } else this.auxiliary.set(key, value) } }
 }
 const envelope = state => ({ format: 'inventory-app', version: 1, exportedAt: '2026-10-02T10:00:00.000Z', state })
 
@@ -110,7 +110,7 @@ test('store 导入原子保存、失败不改内存存储，成功替换并隔�
   const rawBefore = storage.raw
   const imported = fixture()
   storage.fail = true
-  assert.throws(() => store.importState(imported), /保存库存数据失败/)
+  assert.throws(() => store.importState(imported), /保存恢复点失败/)
   assert.deepEqual(JSON.parse(JSON.stringify(store.state)), before)
   assert.equal(storage.raw, rawBefore)
   storage.fail = false

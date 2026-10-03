@@ -1,6 +1,6 @@
 {
   "name": "inventory-app",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "description": "简库存：离线 Android 库存管理 MVP",
@@ -28,3 +28,4 @@
     "vite": "^7.0.0"
   }
 }
+

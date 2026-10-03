@@ -15,14 +15,12 @@ import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 @CapacitorPlugin(name = "InventoryScanner", permissions = {
     @Permission(alias = "camera", strings = { Manifest.permission.CAMERA })
 })
 public class InventoryScannerPlugin extends Plugin {
-    private final AtomicBoolean scanning = new AtomicBoolean(false);
-    private PluginCall pendingCall;
+    private final InventoryPendingOperation<PluginCall> operation = new InventoryPendingOperation<>();
 
     @PluginMethod
     public void scanInventoryBatch(PluginCall call) {
@@ -37,11 +35,10 @@ public class InventoryScannerPlugin extends Plugin {
 
     @PluginMethod
     public void scan(PluginCall call) {
-        if (!scanning.compareAndSet(false, true)) {
+        if (!operation.begin(call)) {
             call.reject("扫码正在进行，请先完成或取消当前扫码", "SCAN_BUSY");
             return;
         }
-        pendingCall = call;
         if (!CameraOperationGate.acquire(this)) { fail(call, "相机正在用于扫码或包装识别，请先完成或取消", "SCAN_BUSY"); return; }
         if (!getContext().getPackageManager().hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)) {
             fail(call, "此设备没有可用摄像头，请手动输入商品条码", "NO_CAMERA");
@@ -60,12 +57,8 @@ public class InventoryScannerPlugin extends Plugin {
 
     @PermissionCallback
     private void cameraPermissionResult(PluginCall call) {
-        if (call == null) {
-            CameraOperationGate.release(this);
-            scanning.set(false);
-            pendingCall = null;
-            return;
-        }
+        if (call == null) { rejectOrphanedCall(); return; }
+        if (!operation.isCurrent(call)) return;
         if (getPermissionState("camera") != PermissionState.GRANTED) {
             fail(call, "未获得相机权限。请在系统设置中允许相机权限，或手动输入商品条码", "CAMERA_DENIED");
             return;
@@ -80,7 +73,7 @@ public class InventoryScannerPlugin extends Plugin {
         }
         getActivity().runOnUiThread(() -> {
             try {
-                if (pendingCall != call || !scanning.get()) return;
+                if (!operation.claimLaunch(call)) return;
                 boolean batch = call.getMethodName().equals("scanInventoryBatch");
                 Intent intent = new Intent(getContext(), batch ? InventoryBatchScannerActivity.class : BarcodeScannerActivity.class);
                 if (batch) intent.putExtra("mode", call.getString("mode")).putExtra("barcode", call.getString("barcode")).putExtra("format", call.getString("format"));
@@ -93,10 +86,9 @@ public class InventoryScannerPlugin extends Plugin {
 
     @ActivityCallback
     private void scanResult(PluginCall call, ActivityResult activityResult) {
+        if (call == null) { rejectOrphanedCall(); return; }
+        if (!operation.finishResult(call, call != null && PluginCall.CALLBACK_ID_DANGLING.equals(call.getCallbackId()))) return;
         CameraOperationGate.release(this);
-        scanning.set(false);
-        pendingCall = null;
-        if (call == null) return;
         Intent data = activityResult.getData();
         if (data != null && data.hasExtra("error")) {
             call.reject(data.getStringExtra("error"), data.getStringExtra("code"));
@@ -107,8 +99,15 @@ public class InventoryScannerPlugin extends Plugin {
             result.put("cancelled", true);
         } else {
             if (call.getMethodName().equals("scanInventoryBatch")) {
-                java.util.ArrayList<String> codes = data.getStringArrayListExtra("codes");
                 String mode = call.getString("mode", "");
+                java.util.ArrayList<String> codes;
+                String token = data.getStringExtra("snapshotToken");
+                java.io.File directory = new java.io.File(getContext().getCacheDir(), InventoryBatchSnapshot.DIRECTORY);
+                try {
+                    codes = InventoryBatchSnapshot.load(directory, token, mode, call.getString("barcode", ""), data.getIntExtra("confirmedCount", -1));
+                } catch (Exception error) {
+                    call.reject("扫码批次缓存已丢失或损坏，本批已取消，请重新扫码；库存未变更", "BATCH_INTERRUPTED"); return;
+                } finally { InventoryBatchSnapshot.discard(directory, token); }
                 if (codes == null || codes.isEmpty() || codes.size() > 10000 || codes.stream().anyMatch(value -> !InventoryBatchSession.validCode(value, mode.equals("unique") ? 120 : 80) || (!mode.equals("unique") && !value.equals(call.getString("barcode")))) || (mode.equals("unique") && new java.util.HashSet<>(codes).size() != codes.size())) {
                     call.reject("识别结果无效，请重新扫码", "INVALID_RESULT"); return;
                 }
@@ -131,19 +130,23 @@ public class InventoryScannerPlugin extends Plugin {
     }
 
     private void fail(PluginCall call, String message, String code) {
+        if (!operation.finish(call)) return;
         CameraOperationGate.release(this);
-        scanning.set(false);
-        pendingCall = null;
         call.reject(message, code);
+    }
+
+    private void rejectOrphanedCall() {
+        PluginCall call = operation.current();
+        // A null stale callback must not cancel a newer call still owned by the bridge.
+        if (call != null && getBridge().getSavedCall(call.getCallbackId()) == null)
+            fail(call, "扫码已中断，请重新打开扫码", "SCAN_INTERRUPTED");
     }
 
     @Override
     protected void handleOnDestroy() {
+        PluginCall call = operation.destroy();
         CameraOperationGate.release(this);
-        if (pendingCall != null) {
-            fail(pendingCall, "扫码已中断，请重新打开扫码", "SCAN_INTERRUPTED");
-        }
-        scanning.set(false);
+        if (call != null) call.reject("扫码已中断，请重新打开扫码", "SCAN_INTERRUPTED");
         super.handleOnDestroy();
     }
 }

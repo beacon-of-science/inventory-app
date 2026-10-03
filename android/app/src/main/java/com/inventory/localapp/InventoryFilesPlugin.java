@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Bundle;
 import android.provider.OpenableColumns;
 import androidx.activity.result.ActivityResult;
 import com.getcapacitor.JSObject;
@@ -23,14 +24,12 @@ import java.util.concurrent.Executors;
 @CapacitorPlugin(name = "InventoryFiles")
 public class InventoryFilesPlugin extends Plugin {
     private final ExecutorService io = Executors.newSingleThreadExecutor();
-    private PluginCall pending;
+    private final InventoryPendingOperation<PluginCall> operation = new InventoryPendingOperation<>();
     private Closeable activeStream;
-    private boolean destroyed;
 
     private synchronized boolean begin(PluginCall call) {
-        if (destroyed) { call.reject("文件操作已中断，请重新打开应用", "FILE_INTERRUPTED"); return false; }
-        if (pending != null) { call.reject("文件操作正在进行，请先完成或取消当前操作", "FILE_BUSY"); return false; }
-        pending = call;
+        if (operation.isDestroyed()) { call.reject("文件操作已中断，请重新打开应用", "FILE_INTERRUPTED"); return false; }
+        if (!operation.begin(call)) { call.reject("文件操作正在进行，请先完成或取消当前操作", "FILE_BUSY"); return false; }
         return true;
     }
 
@@ -63,7 +62,7 @@ public class InventoryFilesPlugin extends Plugin {
             reject(call, "文件操作已中断，请重新打开应用"); return;
         }
         getActivity().runOnUiThread(() -> {
-            synchronized (this) { if (destroyed || pending != call) return; }
+            if (!operation.claimLaunch(call)) return;
             try { startActivityForResult(call, intent, callback); }
             catch (Exception error) { reject(call, "无法打开系统文件选择器，请确认设备支持文件管理"); }
         });
@@ -71,9 +70,12 @@ public class InventoryFilesPlugin extends Plugin {
 
     private Uri selectedUri(PluginCall call, ActivityResult result) {
         if (call == null) {
-            synchronized (this) { pending = null; }
+            PluginCall current = operation.current();
+            if (current != null && getBridge().getSavedCall(current.getCallbackId()) == null)
+                reject(current, "文件操作已中断，请重新打开应用");
             return null;
         }
+        if (!operation.claimResult(call)) return null;
         if (result.getResultCode() != Activity.RESULT_OK) {
             JSObject data = new JSObject(); data.put("cancelled", true); resolve(call, data); return null;
         }
@@ -131,7 +133,7 @@ public class InventoryFilesPlugin extends Plugin {
     private void execute(PluginCall call, FileAction action, String fallback) {
         try {
             io.execute(() -> {
-                synchronized (this) { if (destroyed || pending != call) return; }
+                if (!operation.isCurrent(call)) return;
                 try { action.run(); } catch (Exception error) { reject(call, message(error, fallback)); }
             });
         } catch (Exception error) { reject(call, "文件操作已中断，请重试"); }
@@ -143,23 +145,31 @@ public class InventoryFilesPlugin extends Plugin {
     }
 
     private synchronized void track(PluginCall call, Closeable stream) throws IOException {
-        if (destroyed || pending != call) { stream.close(); throw new IOException("文件操作已中断，请重试"); }
+        if (!operation.isCurrent(call)) { stream.close(); throw new IOException("文件操作已中断，请重试"); }
         activeStream = stream;
     }
     private synchronized void untrack() { activeStream = null; }
     private synchronized void resolve(PluginCall call, JSObject result) {
-        if (destroyed || pending != call) return;
-        pending = null; call.resolve(result);
+        if (!operation.finish(call)) return;
+        call.resolve(result);
     }
     private synchronized void reject(PluginCall call, String message) {
-        if (pending != call) return;
-        pending = null; call.reject(message, "FILE_FAILED");
+        if (!operation.finish(call)) return;
+        call.reject(message, "FILE_FAILED");
+    }
+
+    @Override
+    protected Bundle saveInstanceState() {
+        // Capacitor also serializes the complete PluginCall data when this is non-null.
+        // A 5 MiB export must never enter Android's small saved-state Binder transaction.
+        // File operations interrupted by process death are intentionally not replayed.
+        return null;
     }
 
     @Override
     protected synchronized void handleOnDestroy() {
-        destroyed = true;
-        if (pending != null) reject(pending, "文件操作已中断，请重新打开应用");
+        PluginCall call = operation.destroy();
+        if (call != null) call.reject("文件操作已中断，请重新打开应用", "FILE_INTERRUPTED");
         if (activeStream != null) { try { activeStream.close(); } catch (IOException ignored) {} activeStream = null; }
         io.shutdownNow();
         super.handleOnDestroy();

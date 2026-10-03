@@ -39,6 +39,8 @@ public class InventoryBatchScannerActivity extends AppCompatActivity {
     private Button confirm, done;
     private InventoryBatchSession session;
     private String expectedFormat;
+    private String snapshotToken;
+    private java.io.File snapshots() { return new java.io.File(getCacheDir(), InventoryBatchSnapshot.DIRECTORY); }
     private volatile boolean active, completed;
     private volatile long generation;
     private long frameAt;
@@ -52,7 +54,14 @@ public class InventoryBatchScannerActivity extends AppCompatActivity {
         setResult(RESULT_CANCELED);
         session = new InventoryBatchSession(getIntent().getStringExtra("mode"),getIntent().getStringExtra("barcode"));
         expectedFormat=getIntent().getStringExtra("format");
-        if (state!=null) { ArrayList<String> saved=state.getStringArrayList("confirmed"); if(saved!=null) session.restore(saved); }
+        if (state!=null) {
+            snapshotToken=state.getString("snapshotToken");
+            try {
+                ArrayList<String> saved=InventoryBatchSnapshot.load(snapshots(),snapshotToken,session.mode,session.barcode,state.getInt("confirmedCount",-1));
+                session.restore(saved);
+                if(session.codes().size()!=saved.size())throw new java.io.IOException("恢复计数不一致");
+            } catch(Exception error) { fail("扫码批次缓存已丢失或损坏，本批已取消，请重新扫码；库存未变更","BATCH_INTERRUPTED");return; }
+        }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         detector=BarcodeScanning.getClient(new BarcodeScannerOptions.Builder().setBarcodeFormats(
             Barcode.FORMAT_EAN_13, Barcode.FORMAT_EAN_8, Barcode.FORMAT_UPC_A, Barcode.FORMAT_UPC_E,
@@ -74,9 +83,9 @@ public class InventoryBatchScannerActivity extends AppCompatActivity {
             Button add=new Button(this); add.setText("添加手动单件码"); add.setOnClickListener(v->{ String value=input.getText().toString(); if(!InventoryBatchSession.validCode(value,120)) Toast.makeText(this,"请输入1至120位ASCII单件码",Toast.LENGTH_SHORT).show(); else { session.observeUnique(value); input.setText(""); render(); } }); root.addView(add);
         }
         done=new Button(this); done.setText("完成，返回待提交"); done.setOnClickListener(v->finishCodes(new ArrayList<>(session.codes()))); root.addView(done);
-        Button cancel=new Button(this); cancel.setText("取消本批扫码"); cancel.setOnClickListener(v->finish()); root.addView(cancel);
+        Button cancel=new Button(this); cancel.setText("取消本批扫码"); cancel.setOnClickListener(v->cancelScan()); root.addView(cancel);
         setContentView(root); ViewCompat.requestApplyInsets(root);
-        getOnBackPressedDispatcher().addCallback(this,new OnBackPressedCallback(true){ public void handleOnBackPressed(){finish();} }); render();
+        getOnBackPressedDispatcher().addCallback(this,new OnBackPressedCallback(true){ public void handleOnBackPressed(){cancelScan();} }); render();
     }
     private void render() {
         int count=session.codes().size();
@@ -85,12 +94,28 @@ public class InventoryBatchScannerActivity extends AppCompatActivity {
         else { status.setText("逐件扫码：已确认 "+count+" 件\n每件请手动确认一次，画面停留不会自动增加"); confirm.setText("确认这件 +1"); confirm.setEnabled(!frameCodes.isEmpty() && count<10000); done.setEnabled(count>0); }
     }
     private void confirmFrame() {
-        if(!active || frameCodes.isEmpty() || android.os.SystemClock.elapsedRealtime()-frameAt>1000) return;
+        if(!active || completed || frameCodes.isEmpty() || android.os.SystemClock.elapsedRealtime()-frameAt>1000) return;
         if(session.mode.equals("multiple")) finishCodes(new ArrayList<>(frameCodes));
         else { session.confirmSingle(); clearFrame(); render(); }
     }
-    private void finishCodes(ArrayList<String> codes) { if(completed || codes.isEmpty())return; completed=true; setResult(RESULT_OK,new Intent().putStringArrayListExtra("codes",codes)); finish(); }
-    @Override protected void onSaveInstanceState(Bundle out) { out.putStringArrayList("confirmed",new ArrayList<>(session.codes())); super.onSaveInstanceState(out); }
+    private void finishCodes(ArrayList<String> codes) {
+        if(completed || codes.isEmpty())return;
+        try {
+            // Result Intents use the same Binder size limit as saved-state Bundles.
+            String token=InventoryBatchSnapshot.save(snapshots(),session.mode,session.barcode,codes);
+            completed=true;setResult(RESULT_OK,new Intent().putExtra("snapshotToken",token).putExtra("confirmedCount",codes.size()));finish();
+        } catch(Exception error) {fail("无法保存扫码批次，本批已取消，请重新扫码；库存未变更","BATCH_INTERRUPTED");}
+    }
+    private void cancelScan() { if(completed)return; completed=true; setResult(RESULT_CANCELED); finish(); }
+    @Override protected void onSaveInstanceState(Bundle out) {
+        ArrayList<String> codes=new ArrayList<>(session.codes());
+        String previous=snapshotToken;
+        try { snapshotToken=InventoryBatchSnapshot.save(snapshots(),session.mode,session.barcode,codes); }
+        catch(Exception error) { snapshotToken=null; }
+        InventoryBatchSnapshot.discard(snapshots(),previous);
+        out.putString("snapshotToken",snapshotToken);out.putInt("confirmedCount",codes.size());
+        super.onSaveInstanceState(out);
+    }
     @Override protected void onResume() {
         super.onResume(); if(completed)return;
         if(ContextCompat.checkSelfPermission(this,Manifest.permission.CAMERA)!=PackageManager.PERMISSION_GRANTED){fail("相机权限已关闭，请允许后重试","CAMERA_DENIED");return;}
@@ -131,5 +156,5 @@ public class InventoryBatchScannerActivity extends AppCompatActivity {
     private static String formatName(int f){switch(f){case Barcode.FORMAT_EAN_13:return "EAN_13";case Barcode.FORMAT_EAN_8:return "EAN_8";case Barcode.FORMAT_UPC_A:return "UPC_A";case Barcode.FORMAT_UPC_E:return "UPC_E";case Barcode.FORMAT_CODE_128:return "CODE_128";case Barcode.FORMAT_CODE_39:return "CODE_39";case Barcode.FORMAT_CODE_93:return "CODE_93";case Barcode.FORMAT_ITF:return "ITF";case Barcode.FORMAT_CODABAR:return "CODABAR";default:return null;}}
     private void fail(String message,String code){if(completed)return;completed=true;setResult(RESULT_CANCELED,new Intent().putExtra("error",message).putExtra("code",code));finish();}
     @Override protected void onPause(){active=false;generation++;handler.removeCallbacks(stale);clearFrame();if(provider!=null)provider.unbindAll();super.onPause();}
-    @Override protected void onDestroy(){active=false;completed=true;handler.removeCallbacksAndMessages(null);if(provider!=null)provider.unbindAll();if(detector!=null)detector.close();executor.shutdown();super.onDestroy();}
+    @Override protected void onDestroy(){active=false;completed=true;handler.removeCallbacksAndMessages(null);if(provider!=null)provider.unbindAll();if(detector!=null)detector.close();executor.shutdown();if(isFinishing())InventoryBatchSnapshot.discard(snapshots(),snapshotToken);super.onDestroy();}
 }

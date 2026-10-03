@@ -59,7 +59,8 @@ test('M3 篡改单件状态、引用、唯一码历史和批次被拒绝',()=>{
 })
 test('M3 保存失败不改内存或存储、批次持久化防重',()=>{
  let raw=null,fail=false,writes=0
- const storage={getItem:()=>raw,setItem:(key,value)=>{if(fail)throw Error('disk');assert.equal(key,STORAGE_KEY);raw=value;writes++}}
+ const auxiliary=new Map()
+ const storage={getItem:key=>key===STORAGE_KEY?raw:auxiliary.get(key)??null,setItem:(key,value)=>{if(fail)throw Error('disk');if(key===STORAGE_KEY){raw=value;writes++}else auxiliary.set(key,value)}}
  const store=createInventoryStore(storage);const p=store.addProduct({name:'药品',trackingMode:'unique',productType:'medicine'})
  const value={...input('in',['001'],{confirmBinding:true,batchId:'persist'}),productId:p.id}
  const before=JSON.stringify(store.state),previous=raw;fail=true

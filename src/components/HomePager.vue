@@ -2,9 +2,10 @@
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import { SWIPE_TABS, classifySwipeIntent, resolveSwipeNavigation } from '../navigation/swipeNavigation.js'
 
-const props = defineProps({ modelValue: { type: String, required: true }, blocked: Boolean })
+const props = defineProps({ modelValue: { type: String, required: true }, blocked: Boolean, reduceMotion: Boolean })
 const emit = defineEmits(['navigate', 'motion'])
-const viewport = ref(null), width = ref(1), drag = ref(0), duration = ref(220), reduced = ref(false)
+const viewport = ref(null), width = ref(1), drag = ref(0), duration = ref(220), systemReduced = ref(false)
+const reduced = computed(() => systemReduced.value || props.reduceMotion)
 const index = computed(() => Math.max(0, SWIPE_TABS.indexOf(props.modelValue)))
 const dragging = ref(false)
 const progress = computed(() => Math.max(0, Math.min(SWIPE_TABS.length - 1, index.value - (reduced.value ? 0 : drag.value / width.value))))
@@ -71,9 +72,10 @@ function end(event) {
 watch(() => props.modelValue, () => { clearGesture(); drag.value = 0; duration.value = 220; markSettling() }, { flush: 'sync' })
 watch(() => props.blocked, value => { if (value) cancelGesture() })
 watch([progress, duration, dragging, reduced], () => emit('motion', { progress: progress.value, duration: reduced.value || dragging.value ? 0 : duration.value }), { immediate: true, flush: 'sync' })
-function updateReduced() { reduced.value = media.matches; cancelGesture() }
+watch(reduced, () => cancelGesture())
+function updateReduced() { systemReduced.value = media.matches }
 onMounted(() => {
-  media = window.matchMedia('(prefers-reduced-motion: reduce)'); reduced.value = media.matches
+  media = window.matchMedia('(prefers-reduced-motion: reduce)'); systemReduced.value = media.matches
   media.addEventListener('change', updateReduced)
   observer = new ResizeObserver(entries => {
     const nextWidth = entries[0]?.contentRect.width || 1

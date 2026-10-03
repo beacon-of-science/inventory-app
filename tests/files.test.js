@@ -1,5 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+
+test('浏览器下载仅报告发起，不把未确认保存误记为成功', async () => {
+  const files = createInventoryFiles({ platform: 'web', browser: { async exportFile() { return { cancelled: false, confirmed: false } } } })
+  assert.deepEqual(await files.exportInventoryFile('{}'), { cancelled: false, confirmed: false })
+})
 import { createInventoryFiles, MAX_FILE_BYTES } from '../src/files/inventoryFiles.js'
 
 const sample = '{"name":"收纳盒","barcode":"00123"}'
@@ -24,6 +29,34 @@ test('原生导出保留中文和条码前导零，生成合法JSON文件名', a
 test('原生导入原样返回内容，不在文件层修改库存或解析业务数据', async () => {
   assert.equal(await native().importInventoryFile(), sample)
   assert.equal(await native({ async importFile() { return { cancelled: false, content: 'not json' } } }).importInventoryFile(), 'not json')
+})
+
+test('诊断与损坏原文共用JSON导出入口，文件名区分用途且原文不解析', async () => {
+  const captured = []
+  const files = native({ async exportFile(options) { captured.push(options); return { cancelled: false } } })
+  const raw = '{broken 原文00123'
+  assert.deepEqual(await files.exportDiagnosticFile(sample), { cancelled: false })
+  assert.deepEqual(await files.exportRawInventoryFile(raw), { cancelled: false })
+  assert.match(captured[0].fileName, /^inventory-diagnostics-[\dTZ-]+\.json$/)
+  assert.match(captured[1].fileName, /^inventory-recovery-raw-[\dTZ-]+\.json$/)
+  assert.equal(captured[0].content, sample)
+  assert.equal(captured[1].content, raw)
+})
+
+test('诊断和原文导出共享互斥与大小校验，取消与失败后都释放锁', async () => {
+  let finish, calls = 0
+  const files = native({ exportFile() { calls++; return new Promise(resolve => { finish = resolve }) } })
+  const first = files.exportDiagnosticFile(sample)
+  await assert.rejects(files.exportRawInventoryFile(sample), /正在进行/)
+  await assert.rejects(files.importInventoryFile(), /正在进行/)
+  assert.equal(calls, 1)
+  finish({ cancelled: true })
+  assert.deepEqual(await first, { cancelled: true })
+  await assert.rejects(files.exportRawInventoryFile('中'.repeat(Math.floor(MAX_FILE_BYTES / 3) + 1)), /5 MiB/)
+  assert.equal(calls, 1)
+  const next = files.exportRawInventoryFile(sample)
+  finish({ cancelled: false })
+  assert.deepEqual(await next, { cancelled: false })
 })
 
 test('导出取消返回cancelled，导入取消返回null，后续仍能操作', async () => {

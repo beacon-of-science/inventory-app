@@ -32,6 +32,8 @@ import java.util.List;
 public class BarcodeScannerActivity extends AppCompatActivity {
     private DecoratedBarcodeView scanner;
     private boolean completed;
+    private boolean active;
+    private long generation;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable timeout = () -> fail("未识别到商品条码，请调整距离和光线后重试，或手动输入", "SCAN_TIMEOUT");
 
@@ -110,9 +112,11 @@ public class BarcodeScannerActivity extends AppCompatActivity {
             return;
         }
         try {
+            active = true;
+            long token = ++generation;
             scanner.decodeSingle(new BarcodeCallback() {
                 @Override public void barcodeResult(BarcodeResult result) {
-                    if (completed || result == null || !BarcodeFormats.SUPPORTED.contains(result.getBarcodeFormat())) return;
+                    if (!active || generation != token || completed || result == null || !BarcodeFormats.SUPPORTED.contains(result.getBarcodeFormat())) return;
                     completed = true;
                     handler.removeCallbacks(timeout);
                     scanner.pause();
@@ -130,6 +134,8 @@ public class BarcodeScannerActivity extends AppCompatActivity {
 
     @Override
     protected void onPause() {
+        active = false;
+        generation++;
         handler.removeCallbacks(timeout);
         if (scanner != null) scanner.pause();
         super.onPause();
@@ -137,6 +143,9 @@ public class BarcodeScannerActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        active = false;
+        completed = true;
+        generation++;
         handler.removeCallbacksAndMessages(null);
         if (scanner != null) scanner.pause();
         super.onDestroy();

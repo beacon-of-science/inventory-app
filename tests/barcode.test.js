@@ -7,7 +7,7 @@ import { createInventoryStore } from '../src/store/inventoryStore.js'
 const meta = id => ({ id, now: '2026-10-01T10:00:00.000Z' })
 const initial = () => addProduct(createEmptyState(), { name: '商品', sku: 'SKU', barcode: ' 001234 ' }, meta('p1')).state
 function storage(raw = null) {
-  return { raw, writes: 0, getItem(key) { assert.equal(key, STORAGE_KEY); return this.raw }, setItem(key, value) { assert.equal(key, STORAGE_KEY); this.raw = value; this.writes++ } }
+  return { raw, writes: 0, auxiliary: new Map(), getItem(key) { return key === STORAGE_KEY ? this.raw : this.auxiliary.get(key) ?? null }, setItem(key, value) { if (key === STORAGE_KEY) { this.raw = value; this.writes++ } else this.auxiliary.set(key, value) } }
 }
 
 test('条码修剪且保留前导零；SKU 与条码独立且精确查找不改库存', () => {
