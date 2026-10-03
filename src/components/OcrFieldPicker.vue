@@ -1,12 +1,20 @@
 <script setup>
 import { computed } from 'vue'
 import { getOcrFieldOptions } from '../core/packaging.js'
-const props = defineProps({fields:Object,captures:Array,selected:Object,disabled:Boolean})
+import { productFieldChoices } from '../ocr/productAutofill.js'
+const props = defineProps({fields:Object,captures:Array,selected:Object,automatic:Object,disabled:Boolean})
 const emit = defineEmits(['select'])
 const labels = {name:'名称',specification:'规格',manufacturer:'厂家'}
 const limits = {name:80,specification:120,manufacturer:120}
 const options = computed(() => getOcrFieldOptions(props.captures))
-function choices(key) { return options.value[key] }
+function choices(key) { return productFieldChoices(props.fields[key],key) }
+function hint(key) {
+  const values = choices(key), selected = props.selected[key]
+  if (selected && !values.includes(selected)) return '当前填写与识别候选不同，请核对；不会覆盖已有填写。'
+  if (selected && props.automatic?.[key] === selected) return '已自动填入 · 待核对'
+  if (selected && values.includes(selected)) return '已选择 · 请对照包装核对'
+  return values.length > 1 ? '多个候选，请选择正确内容' : values.length ? '待确认候选' : '暂无合适候选，请补拍或在表单校正'
+}
 function selectLine(key,event) { if(event.target.value) emit('select',key,event.target.value); event.target.value = '' }
 </script>
 <template>
@@ -14,7 +22,7 @@ function selectLine(key,event) { if(event.target.value) emit('select',key,event.
     <h4>核对包装信息</h4><p>对照包装核对名称、规格和厂家；不准确时可重新拍摄或手动修改。</p>
     <div v-for="(field,key) in fields" :key="key" class="ocr-choice">
       <label>{{ labels[key] }}<output>{{ selected[key] || '尚未填写' }}</output></label>
-      <small>{{ field.status === 'recognized' ? '标签或完整已有名称匹配' : choices(key).length ? '待确认候选' : '暂无合适候选，请补拍或在表单校正' }}</small>
+      <small>{{ hint(key) }}</small>
       <div class="ocr-suggestions"><button v-for="candidate in choices(key)" :key="candidate" type="button" :class="{ selected: selected[key] === candidate }" :aria-pressed="selected[key] === candidate" :disabled="disabled || candidate.length > limits[key]" @click="emit('select',key,candidate)">{{ candidate }}</button></div>
       <select :aria-label="`从筛选文字选择${labels[key]}`" :disabled="disabled || !options[key].length" @change="selectLine(key,$event)"><option value="">{{ options[key].length ? `选择${labels[key]}候选…` : '未找到合适候选，请补拍' }}</option><option v-for="line in options[key].filter(value => value.length <= limits[key])" :key="line" :value="line">{{ line }}</option></select>
     </div>

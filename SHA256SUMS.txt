@@ -1,1 +1,1 @@
-c21f9aae26895a157ea285eec4507502872b30b47a0d3cb6b81e34e8b9250f90  inventory-app-debug.apk
+213a0ab6db4477225815b9a4cff67788eee566413cb1e7d81082f5803279d1ce  inventory-app-debug.apk

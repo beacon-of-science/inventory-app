@@ -114,6 +114,7 @@ function inferOcrFieldOptions(copied) {
   const dose = '(?:[0-9]+(?:\\.[0-9]+)?\\s*(?:μg|ug|mcg|mg|kg|g|mL|ml|L|l|IU|万单位|单位|毫克|微克|克|毫升)(?:\\s*\\/\\s*(?:片|粒|支|袋|瓶|丸|mL|ml))?)'
   const count = '(?:[0-9]+\\s*(?:片|粒|支|袋|瓶|丸|贴|枚|包))'
   const spec = new RegExp(`^(?:${dose}|${count})(?:\\s*[×xX*]\\s*(?:${dose}|${count}|[0-9]+))*?(?:\\s*\\/\\s*(?:盒|瓶|袋|板|包))?$`, 'u')
+  const descriptiveSpec = new RegExp(`^每(?:片|粒|支|袋|瓶|丸)\\s*(?:含\\s*)?${dose}(?:\\s*[,;，；]?\\s*(?:内装|装量|包装)\\s*${count}(?:\\s*\\/\\s*(?:盒|瓶|袋|板|包))?)?$`, 'u')
   const company = /^[\p{Script=Han}A-Za-z0-9()· -]{2,90}(?:股份有限公司|有限责任公司|有限公司|制药厂|药厂)$/u
   for (const capture of copied) {
     const lines = capture.text.split(/\r?\n/).map(cleanOcrCandidateLine).filter(Boolean)
@@ -130,7 +131,7 @@ function inferOcrFieldOptions(copied) {
       if (!labeled && index > 0 && (unsafe.test(lines[index - 1]) || (!previousLabel && /^(?:\[[^\]]+\]\s*:?|[\p{Script=Han}]{2,12}:)$/u.test(lines[index - 1])))) continue
       if ((!labeledKey || labeledKey === 'name') && title.test(line) && /\p{Script=Han}/u.test(line) && !/的/u.test(line)) inferred.name.push(line)
       const unwrapped = /^\([^()]+\)$/.test(line) ? line.slice(1, -1).trim() : line
-      if ((!labeledKey || labeledKey === 'specification') && unwrapped.length <= 120 && spec.test(unwrapped)) inferred.specification.push(line)
+      if ((!labeledKey || labeledKey === 'specification') && unwrapped.length <= 120 && (spec.test(unwrapped) || descriptiveSpec.test(unwrapped))) inferred.specification.push(line)
       if ((!labeledKey || labeledKey === 'manufacturer') && company.test(line)) inferred.manufacturer.push(line)
     }
   }

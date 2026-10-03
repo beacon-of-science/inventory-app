@@ -4,9 +4,17 @@
 
 ## 手机安装包
 
-[下载 Android APK](https://github.com/beacon-of-science/inventory-app/releases/download/v0.6.0/inventory-app-debug.apk) · [Releases 发布页](https://github.com/beacon-of-science/inventory-app/releases/tag/v0.6.0)
+[下载 Android APK](https://github.com/beacon-of-science/inventory-app/releases/download/v0.6.1/inventory-app-debug.apk) · [Releases 发布页](https://github.com/beacon-of-science/inventory-app/releases/tag/v0.6.1)
 
 这是 Debug 测试版，支持 Android 7.0 及以上。手机安装与使用不需要安装 Node.js；下面的 Node.js 步骤仅用于修改源码和重新打包。
+
+## v0.6.1 OCR 候选自动填表
+
+新增/编辑商品拍照时，字段只有一个合适候选且当前为空，会自动填入并显示「已自动填入 · 待核对」。多个候选仍需点选。补拍产生冲突时，尚未修改的自动内容会撤回；人工选择、手动校正和已有商品资料不会被覆盖，候选不同会提示。清除原文重拍会撤回自动填写，保留人工修改。
+
+支持「每片12.5mg，内装14片」「每粒0.25g；内装24粒」等含量和包装描述，保留原文数字，不推测破损剂量。填写草稿不等于包装核对通过，原文、同盒确认、冲突拦截与历史规则保持。入库流程仍根据已有参考和原文核对；本轮只调整商品建档的自动填写。
+
+245 项 JavaScript 测试覆盖唯一候选、多个候选、补拍冲突、手动保护、清除重拍及描述性规格；实际药盒拍摄识别仍需在手机复测。
 
 ## v0.6.0 界面与动画统一
 

@@ -11,6 +11,7 @@ import { exportInventoryFile, importInventoryFile } from './files/inventoryFiles
 
 import { installAndroidBackHandler, minimizeApp } from './navigation/androidNavigation.js'
 import OcrFieldPicker from './components/OcrFieldPicker.vue'
+import { autofillProductDraft } from './ocr/productAutofill.js'
 import { chooseBackAction } from './navigation/backNavigation.js'
 import HomePager from './components/HomePager.vue'
 const store = createInventoryStore()
@@ -84,6 +85,7 @@ const allowIncomplete = ref(false)
 const intakeCaptures = ref([]), intakeUnitCode = ref('')
 const intakeNameConfirmed = ref(false)
 const productOcrCaptures = ref([]), productOcrBusy = ref(false)
+const productOcrAutomatic = ref({})
 const emptyExtraction = () => Object.fromEntries(['name','specification','manufacturer'].map(key => [key,{value:'',status:'missing',candidates:[]}]))
 const intakeFields = computed(() => intakeCaptures.value.length ? extractPackagingFields(intakeCaptures.value,{expectedName:movementProduct.value?.name}) : emptyExtraction())
 const intakeNameChoice = computed(() => intakeCaptures.value.length ? getOcrFieldOptions(intakeCaptures.value).name.find(value => normalizePackagingText(value) === normalizePackagingText(movementProduct.value?.name || '')) || '' : '')
@@ -91,6 +93,7 @@ const productOcrFields = computed(() => productOcrCaptures.value.length ? extrac
 const extractionLabels = {recognized:'标签或已有名称匹配',missing:'未找到，请补拍或从原文选取',ambiguous:'多个候选，请点选核对',suggested:'推测候选，请点选核对'}
 function useOcrCandidate(key, value) {
   productForm.value[key] = value
+  delete productOcrAutomatic.value[key]
   notify(`已选为${fieldLabels[key]}，请核对包装`)
 }
 const intakeProblem = computed(() => {
@@ -111,15 +114,17 @@ async function captureProductFace() {
     const result = await capturePackagingText()
     if (!result || !productSheet.value) return
     productOcrCaptures.value.push({id:freshBatchId(),text:result.text,createdAt:new Date().toISOString()})
-    for (const key of ['name','specification','manufacturer']) {
-      const field = productOcrFields.value[key]
-      if (field.status === 'recognized') productForm.value[key] = field.value
-    }
-    notify('已读取文字，请核对归类')
+    const draft = autofillProductDraft(productForm.value, productOcrFields.value, productOcrAutomatic.value)
+    productForm.value = draft.values; productOcrAutomatic.value = draft.automatic
+    notify('唯一候选已填入，请对照包装核对')
   } catch(error) { formError.value = error.message }
   finally { productOcrBusy.value = false }
 }
-function resetProductOcr() { productOcrCaptures.value = []; formError.value = '' }
+function resetProductOcr() {
+  const draft = autofillProductDraft(productForm.value, {}, productOcrAutomatic.value)
+  productForm.value = draft.values; productOcrAutomatic.value = {}
+  productOcrCaptures.value = []; formError.value = ''
+}
 async function captureIntakeFace() {
   const productId = movementProduct.value?.id, operation = batchId.value
   if (!movementSheet.value || movementForm.value.type !== 'in' || movementProduct.value?.trackingMode !== 'unique' || ocrBusy.value || batchScanning.value || intakeCaptures.value.length >= 6) return
@@ -300,6 +305,7 @@ function openProduct(product, barcode = '') {
   if (storageError.value || transferBusy.value) return
   editingId.value = product?.id || ''
   productOcrCaptures.value = []
+  productOcrAutomatic.value = {}
   productForm.value = { productType: product?.productType || 'unknown', trackingMode: product?.trackingMode || 'quantity', specification: product?.specification || '', manufacturer: product?.manufacturer || '', name: product?.name || '', sku: product?.sku || '', barcode: product?.barcode || barcode, category: product?.category || '', lowStockThreshold: product?.lowStockThreshold == null ? '' : String(product.lowStockThreshold), unit: product?.unit || '件', note: product?.note || '' }
   formError.value = ''
   productSheet.value = true
@@ -530,7 +536,7 @@ function confirmImport() {
 
     <van-popup v-model:show="productSheet" position="bottom" round :closeable="!productOcrBusy && !scanning" class="sheet-popup" :close-on-click-overlay="false" aria-label="商品信息表单">
       <div class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><h2>{{ editingId ? '编辑商品' : '新增商品' }}</h2><p>{{ editingId ? '更新商品资料，库存数量保持不变。' : '先建立商品档案，初始库存为 0。' }}</p></div>
-      <form class="sheet-form" @submit.prevent="saveProduct"><section class="product-photo-card" aria-label="包装信息自动填写"><h3>拍包装，自动填写商品信息</h3><p>拍清药名、规格和厂家，可翻面补拍。有标签的文字自动填写；推测候选请点选，无需重新打字。</p><button type="button" class="button button-primary" @click="captureProductFace" :disabled="productOcrBusy || scanning || productOcrCaptures.length >= 6" :aria-busy="productOcrBusy"><van-icon name="photograph" />{{ productOcrBusy ? '正在识别…' : productOcrCaptures.length ? '翻面补拍信息' : '拍摄包装' }}</button><OcrFieldPicker v-if="productOcrCaptures.length" :fields="productOcrFields" :captures="productOcrCaptures" :selected="productForm" :disabled="productOcrBusy" @select="useOcrCandidate" /><button v-if="productOcrCaptures.length" type="button" class="text-button" :disabled="productOcrBusy" @click="resetProductOcr">清除识别原文后重拍</button></section><fieldset class="movement-fields" :disabled="productOcrBusy || scanning">
+      <form class="sheet-form" @submit.prevent="saveProduct"><section class="product-photo-card" aria-label="包装信息自动填写"><h3>拍包装，自动填写商品信息</h3><p>拍清药名、规格和厂家，可翻面补拍。唯一候选会自动填入，仍需对照包装核对；多个候选请点选。</p><button type="button" class="button button-primary" @click="captureProductFace" :disabled="productOcrBusy || scanning || productOcrCaptures.length >= 6" :aria-busy="productOcrBusy"><van-icon name="photograph" />{{ productOcrBusy ? '正在识别…' : productOcrCaptures.length ? '翻面补拍信息' : '拍摄包装' }}</button><OcrFieldPicker v-if="productOcrCaptures.length" :fields="productOcrFields" :captures="productOcrCaptures" :selected="productForm" :automatic="productOcrAutomatic" :disabled="productOcrBusy" @select="useOcrCandidate" /><button v-if="productOcrCaptures.length" type="button" class="text-button" :disabled="productOcrBusy" @click="resetProductOcr">清除识别原文后重拍</button></section><fieldset class="movement-fields" :disabled="productOcrBusy || scanning">
         <label class="form-field"><span>商品名称 <em>*</em></span><input v-model="productForm.name" name="product-name" placeholder="例如：一次性检查手套" maxlength="80" autocomplete="off" required /><small>{{ productForm.name.length }}/80</small></label>
         <div class="form-grid"><label class="form-field"><span>商品编号</span><input v-model="productForm.sku" name="product-sku" placeholder="选填，例如 SKU001" maxlength="40" autocomplete="off" /></label><label class="form-field"><span>计量单位 <em>*</em></span><input v-model="productForm.unit" name="product-unit" placeholder="例如：件" maxlength="12" required /></label></div>
         <div class="form-field"><label for="product-barcode" class="barcode-label">商品条码</label><div class="barcode-input"><input id="product-barcode" v-model="productForm.barcode" name="product-barcode" type="text" placeholder="选填，扫描或手动输入" maxlength="80" autocomplete="off" :disabled="scanning" /><button type="button" class="button button-secondary" :disabled="scanning || !!storageError || transferBusy" :aria-busy="scanning" aria-label="扫码填写商品条码" @click="startScan('form')"><van-icon name="scan" />{{ scanning ? '扫码中' : '扫码' }}</button></div><small class="barcode-help">条码与商品编号分别保存，支持前导 0。{{ productForm.barcode.length }}/80</small></div>
@@ -605,3 +611,4 @@ function confirmImport() {
 .nav-indicator{transform:translateX(calc(var(--page-progress,0)*100%));transition:transform var(--motion-duration,220ms) cubic-bezier(.2,.8,.2,1)}
 @media(prefers-reduced-motion:reduce){.nav-indicator{transition:none!important}}
 </style>
+
