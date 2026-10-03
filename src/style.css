@@ -48,3 +48,6 @@
 
 
 .recovery-status{margin:0 16px 8px;padding:10px 14px;text-align:left;border:1px solid #efdfc4;border-radius:10px;background:#fff7e9;color:#8d621d;font-size:12px;line-height:19px}.archive-confirm{display:flex;align-items:flex-start;gap:10px;margin:16px 0;padding:14px;background:#fff7e9;border-radius:12px;font-size:14px;line-height:22px;color:#8d621d}.archive-confirm input{margin-top:3px}
+
+/* Brand icon matches the Android launcher. */
+.brand-mark img,.mini-mark img{display:block;width:100%;height:100%;object-fit:contain}

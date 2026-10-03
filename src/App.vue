@@ -550,7 +550,7 @@ async function exportDiagnostics() {
   <div class="app-shell" :class="{ 'reduced-motion': store.settings.reduceMotion }">
     <aside class="desktop-rail">
       <a class="brand" href="#" @click.prevent="navigateTo('products')" aria-label="简库存首页">
-        <span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" stroke="currentColor" stroke-width="1.7"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9m-4-16.2 8 4.5" stroke="currentColor" stroke-width="1.7"/></svg></span>
+        <span class="brand-mark"><img src="/icon.svg" alt="" /></span>
         <span>简库存<small>本机库存管理</small></span>
       </a>
       <nav class="rail-nav" aria-label="主导航">
@@ -560,7 +560,7 @@ async function exportDiagnostics() {
     </aside>
 
     <div class="main-layout">
-      <header class="mobile-brand"><span class="mini-mark"><van-icon name="apps-o" /></span><span>简库存</span><button class="backup-entry" aria-label="打开设置与备份" @click="backupSheet = true"><van-icon name="setting-o" />设置</button></header>
+      <header class="mobile-brand"><span class="mini-mark"><img src="/icon.svg" alt="" /></span><span>简库存</span><button class="backup-entry" aria-label="打开设置与备份" @click="backupSheet = true"><van-icon name="setting-o" />设置</button></header>
       <button v-if="store.recovery.warning && !storageError" class="recovery-status" @click="backupSheet = true"><van-icon name="warning-o" />本机备份需要检查 · 打开设置查看</button>
       <HomePager :model-value="tab" :blocked="pagerBlocked" :reduce-motion="store.settings.reduceMotion" @navigate="navigateTo" @motion="pagerMotion = $event"><template #default="{ page }"><main class="refined-main">
         <div class="page-heading">
