@@ -11,11 +11,11 @@ function selectLine(key,event) { if(event.target.value) emit('select',key,event.
 </script>
 <template>
   <section class="ocr-picker" aria-label="OCR 字段核对">
-    <h4>核对文字归类</h4><p>文字先清理外围装饰线，再按名称、规格和厂家筛选。候选仍需对照包装核对；完整原文保留在下方。</p>
+    <h4>核对包装信息</h4><p>对照包装核对名称、规格和厂家；不准确时可重新拍摄或手动修改。</p>
     <div v-for="(field,key) in fields" :key="key" class="ocr-choice">
       <label>{{ labels[key] }}<output>{{ selected[key] || '尚未填写' }}</output></label>
       <small>{{ field.status === 'recognized' ? '标签或完整已有名称匹配' : choices(key).length ? '待确认候选' : '暂无合适候选，请补拍或在表单校正' }}</small>
-      <div class="ocr-suggestions"><button v-for="candidate in choices(key)" :key="candidate" type="button" :disabled="disabled || candidate.length > limits[key]" @click="emit('select',key,candidate)">{{ candidate }}</button></div>
+      <div class="ocr-suggestions"><button v-for="candidate in choices(key)" :key="candidate" type="button" :class="{ selected: selected[key] === candidate }" :aria-pressed="selected[key] === candidate" :disabled="disabled || candidate.length > limits[key]" @click="emit('select',key,candidate)">{{ candidate }}</button></div>
       <select :aria-label="`从筛选文字选择${labels[key]}`" :disabled="disabled || !options[key].length" @change="selectLine(key,$event)"><option value="">{{ options[key].length ? `选择${labels[key]}候选…` : '未找到合适候选，请补拍' }}</option><option v-for="line in options[key].filter(value => value.length <= limits[key])" :key="line" :value="line">{{ line }}</option></select>
     </div>
     <details><summary>查看全部识别原文</summary><p v-for="capture in captures" :key="capture.id">{{ capture.text }}</p></details>

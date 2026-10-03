@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, unref, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { computed, ref, reactive, unref, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { showToast, showConfirmDialog, closeDialog } from 'vant'
 import { createInventoryStore } from './store/inventoryStore.js'
 import { scanBarcode, scanInventoryBatch } from './scanner/barcodeScanner.js'
@@ -12,57 +12,20 @@ import { exportInventoryFile, importInventoryFile } from './files/inventoryFiles
 import { installAndroidBackHandler, minimizeApp } from './navigation/androidNavigation.js'
 import OcrFieldPicker from './components/OcrFieldPicker.vue'
 import { chooseBackAction } from './navigation/backNavigation.js'
-import { resolveSwipeNavigation, classifySwipeIntent } from './navigation/swipeNavigation.js'
+import HomePager from './components/HomePager.vue'
 const store = createInventoryStore()
-const pageMotion = ref('page-forward')
-const pageSwitching = ref(false)
-let pageSwitchTimer, swipeStart = null, suppressSwipeClickUntil = 0
-const dragOffset = ref(0), draggingPage = ref(false)
-function cancelSwipe() { swipeStart = null; dragOffset.value = 0; draggingPage.value = false }
-function guardSwipeClick(event) {
-  if (performance.now() < suppressSwipeClickUntil) { event.preventDefault(); event.stopPropagation() }
+const pagerMotion = ref({ progress: 0, duration: 220 })
+const pagerBlocked = computed(() => productSheet.value || movementSheet.value || detailSheet.value || unknownSheet.value || importSheet.value || backupSheet.value || dialogOpen.value || scanning.value || batchScanning.value || ocrBusy.value || productOcrBusy.value || transferBusy.value || submitting.value)
+const pageStates = reactive(Object.fromEntries(['products','stock','history'].map(page => [page, { search: '', categoryFilter: 'all', lowStockOnly: false, filtersOpen: false }])))
+function activePageField(field) {
+  return computed({ get: () => pageStates[tab.value][field], set: value => { pageStates[tab.value][field] = value } })
 }
-function finishPageSwitch() { pageSwitching.value = false; clearTimeout(pageSwitchTimer) }
-function swipeBlocked() {
-  return pageSwitching.value || productSheet.value || movementSheet.value || detailSheet.value || unknownSheet.value || importSheet.value || backupSheet.value || dialogOpen.value || scanning.value || batchScanning.value || ocrBusy.value || productOcrBusy.value || transferBusy.value
-}
-function beginSwipe(event) {
-  cancelSwipe()
-  if (event.touches.length !== 1 || swipeBlocked() || event.target.closest('input,textarea,select,summary,[contenteditable="true"],pre,code')) return
-  const point = event.touches[0]
-  if (point.clientX <= 24 || point.clientX >= window.innerWidth - 24) return
-  swipeStart = {startX:point.clientX,startY:point.clientY,startedAt:performance.now(),currentTab:tab.value,viewportWidth:window.innerWidth,intent:'pending'}
-}
-function moveSwipe(event) {
-  if (!swipeStart) return
-  if (event.touches.length !== 1 || swipeBlocked()) { cancelSwipe(); return }
-  const dx = event.touches[0].clientX - swipeStart.startX, dy = event.touches[0].clientY - swipeStart.startY
-  if (swipeStart.intent === 'pending') swipeStart.intent = classifySwipeIntent(dx,dy)
-  if (swipeStart.intent === 'vertical') { cancelSwipe(); return }
-  if (swipeStart.intent === 'horizontal') {
-    draggingPage.value = true
-    const atEnd = (tab.value === 'products' && dx > 0) || (tab.value === 'history' && dx < 0)
-    dragOffset.value = Math.max(-72,Math.min(72,dx*(atEnd ? .15 : .55)))
-  }
-}
-function endSwipe(event) {
-  const start = swipeStart; cancelSwipe()
-  if (!start || swipeBlocked() || event.changedTouches.length !== 1 || event.touches.length || start.currentTab !== tab.value) return
-  const point = event.changedTouches[0]
-  if (start.intent === 'horizontal') suppressSwipeClickUntil = performance.now() + 300
-  const next = resolveSwipeNavigation({...start,endX:point.clientX,endY:point.clientY,durationMs:performance.now()-start.startedAt})
-  if (next) navigateTo(next)
-}
-const filtersOpen = ref(false)
+const filtersOpen = activePageField('filtersOpen')
 const dialogOpen = ref(false)
 let lastRootBack = 0, stopAndroidBack = () => {}
 function navigateTo(next) {
-  if (tab.value === next || pageSwitching.value) return
-  pageSwitching.value = true; cancelSwipe()
-  pageSwitchTimer = setTimeout(finishPageSwitch, 260)
-  pageMotion.value = ['products','stock','history'].indexOf(next) > ['products','stock','history'].indexOf(tab.value) ? 'page-forward' : 'page-back'
-  tab.value = next; search.value = ''; filtersOpen.value = false; lastRootBack = 0
-  nextTick(() => window.scrollTo({top:0,behavior:'instant'}))
+  if (!['products','stock','history'].includes(next) || tab.value === next) return
+  tab.value = next; lastRootBack = 0
 }
 function handleBack() {
   const action = chooseBackAction({dialog:dialogOpen.value,importPreview:importSheet.value,
@@ -86,9 +49,9 @@ function handleBack() {
 }
 function escapeBack(event) { if (event.key === 'Escape') { event.preventDefault(); handleBack() } }
 onMounted(() => { stopAndroidBack = installAndroidBackHandler(handleBack); window.addEventListener('keydown',escapeBack) })
-onUnmounted(() => { stopAndroidBack(); window.removeEventListener('keydown',escapeBack); clearTimeout(pageSwitchTimer) })
+onUnmounted(() => { stopAndroidBack(); window.removeEventListener('keydown',escapeBack) })
 const tab = ref('products')
-const search = ref('')
+const search = activePageField('search')
 const historyFilter = ref('all')
 const productSheet = ref(false)
 const movementSheet = ref(false)
@@ -101,8 +64,6 @@ const status = ref('')
 const scanning = ref(false)
 const unknownBarcode = ref('')
 const unknownSheet = ref(false)
-const categoryFilter = ref('all')
-const lowStockOnly = ref(false)
 const transferBusy = ref(false)
 const importSheet = ref(false)
 const backupSheet = ref(false)
@@ -310,20 +271,21 @@ const movements = computed(() => store.state.movements)
 const inStockCount = computed(() => products.value.filter(product => product.stock > 0).length)
 const lowStockCount = computed(() => products.value.filter(isLowStock).length)
 const categories = computed(() => [...new Set(products.value.map(product => product.category).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-CN')))
-const filteredProducts = computed(() => {
-  const query = search.value.trim().toLowerCase()
-  return [...products.value].filter(product => categoryFilter.value === 'all' || (categoryFilter.value === 'uncategorized' ? !product.category : product.category === categoryFilter.value.slice(9)))
-    .filter(product => !lowStockOnly.value || isLowStock(product))
+const pageProducts = computed(() => Object.fromEntries(Object.entries(pageStates).map(([page, state]) => {
+  const query = state.search.trim().toLowerCase()
+  const list = [...products.value].filter(product => state.categoryFilter === 'all' || (state.categoryFilter === 'uncategorized' ? !product.category : product.category === state.categoryFilter.slice(9)))
+    .filter(product => !state.lowStockOnly || isLowStock(product))
     .filter(product => !query || product.name.toLowerCase().includes(query) || product.sku.toLowerCase().includes(query) || (product.barcode || '').toLowerCase().includes(query) || (product.category || '').toLowerCase().includes(query))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-})
+  return [page, list]
+})))
 const filteredMovements = computed(() => [...movements.value]
   .filter(movement => historyFilter.value === 'all' || movement.type === historyFilter.value)
   .sort((a, b) => b.createdAt.localeCompare(a.createdAt)))
 const detailProduct = computed(() => products.value.find(product => product.id === detailId.value))
 const movementProduct = computed(() => products.value.find(product => product.id === movementForm.value.productId))
-const pageTitle = computed(() => ({ products: '商品管理', stock: '当前库存', history: '出入库记录' }[tab.value]))
-const pageDescription = computed(() => ({ products: '每一件商品，都井井有条。', stock: '看清库存，及时记录每一次变化。', history: '从入库到出库，变化都有迹可循。' }[tab.value]))
+const pageTitles = { products: '商品管理', stock: '当前库存', history: '出入库记录' }
+const pageDescriptions = { products: '管理商品，随时掌握库存', stock: '看清库存，及时记录每一次变化', history: '查看每一次入库和出库' }
 
 function formatDate(value, full = false) {
   const date = new Date(value)
@@ -470,10 +432,9 @@ function saveMovement() {
   } catch (error) { movementError.value = error.message || '记录失败，当前库存未更改。' }
   finally { submitting.value = false }
 }
-function resetFilters() {
-  search.value = ''
-  categoryFilter.value = 'all'
-  lowStockOnly.value = false
+function resetFilters(page = tab.value) {
+  if (typeof page !== 'string' || !pageStates[page]) page = tab.value
+  Object.assign(pageStates[page], { search: '', categoryFilter: 'all', lowStockOnly: false })
 }
 async function exportData() {
   if (transferBusy.value || scanning.value || storageError.value) return
@@ -516,7 +477,7 @@ function confirmImport() {
     <aside class="desktop-rail">
       <a class="brand" href="#" @click.prevent="navigateTo('products')" aria-label="简库存首页">
         <span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" stroke="currentColor" stroke-width="1.7"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9m-4-16.2 8 4.5" stroke="currentColor" stroke-width="1.7"/></svg></span>
-        <span>简库存<small>INVENTORY</small></span>
+        <span>简库存<small>本机库存管理</small></span>
       </a>
       <nav class="rail-nav" aria-label="主导航">
         <button v-for="item in [{ id: 'products', label: '商品', icon: 'apps-o' }, { id: 'stock', label: '库存', icon: 'orders-o' }, { id: 'history', label: '记录', icon: 'clock-o' }]" :key="item.id" :class="{ active: tab === item.id }" @click="navigateTo(item.id)" :aria-current="tab === item.id ? 'page' : undefined"><van-icon :name="item.icon" /><span>{{ item.label }}</span></button>
@@ -526,51 +487,51 @@ function confirmImport() {
 
     <div class="main-layout">
       <header class="mobile-brand"><span class="mini-mark"><van-icon name="apps-o" /></span><span>简库存</span><button class="backup-entry" aria-label="打开数据备份" @click="backupSheet = true"><van-icon name="shield-o" />备份</button></header>
-      <div class="page-stage" :class="{'is-dragging':draggingPage}" :style="{'--drag-x':`${dragOffset}px`}" @click.capture="guardSwipeClick" @touchstart.passive="beginSwipe" @touchmove.passive="moveSwipe" @touchend.passive="endSwipe" @touchcancel="cancelSwipe"><Transition :name="pageMotion" @after-enter="finishPageSwitch"><main :key="tab" class="refined-main">
+      <HomePager :model-value="tab" :blocked="pagerBlocked" @navigate="navigateTo" @motion="pagerMotion = $event"><template #default="{ page }"><main class="refined-main">
         <div class="page-heading">
-          <div><h1>{{ pageTitle }}</h1><p class="page-subtitle">{{ tab === 'products' ? '管理商品，随时掌握库存' : pageDescription }}</p></div><button class="backup-entry desktop-backup" aria-label="打开数据备份" @click="backupSheet = true"><van-icon name="shield-o" />数据备份</button>
-          <button v-if="tab === 'products' && products.length" class="button button-primary desktop-add" :disabled="!!storageError || transferBusy" @click="openProduct()"><van-icon name="plus" />新增商品</button>
-          <div v-if="tab === 'stock'" class="heading-actions"><button class="button button-secondary" :disabled="!!storageError || transferBusy || !products.length" @click="openMovement('out')"><van-icon name="minus" />出库</button><button class="button button-primary" :disabled="!!storageError || transferBusy || !products.length" @click="openMovement('in')"><van-icon name="plus" />入库</button></div>
+          <div><h1>{{ pageTitles[page] }}</h1><p class="page-subtitle">{{ pageDescriptions[page] }}</p></div><button class="backup-entry desktop-backup" aria-label="打开数据备份" @click="backupSheet = true"><van-icon name="shield-o" />数据备份</button>
+          <button v-if="page === 'products' && products.length" class="button button-primary desktop-add" :disabled="!!storageError || transferBusy" @click="openProduct()"><van-icon name="plus" />新增商品</button>
+          <div v-if="page === 'stock'" class="heading-actions"><button class="button button-secondary" :disabled="!!storageError || transferBusy || !products.length" @click="openMovement('out')"><van-icon name="minus" />出库</button><button class="button button-primary" :disabled="!!storageError || transferBusy || !products.length" @click="openMovement('in')"><van-icon name="plus" />入库</button></div>
         </div>
 
         <div v-if="storageError" class="storage-alert" role="alert"><van-icon name="warning-o" /><div><strong>暂时无法使用本机数据</strong><p>{{ storageError }}</p><p>为保护现有记录，新增、修改和出入库暂不可用。</p></div></div>
 
-        <section v-if="tab !== 'history' && products.length" class="inventory-strip" aria-label="库存概览"><div><span>商品</span><strong>{{ products.length }}</strong><small>种</small></div><div><span>有库存</span><strong>{{ inStockCount }}</strong><small>种</small></div><button :class="{ warning: lowStockCount, active: lowStockOnly }" :aria-pressed="lowStockOnly" aria-label="切换低库存筛选" @click="lowStockOnly = !lowStockOnly"><span>低库存</span><strong>{{ lowStockCount }}</strong><small>种</small><van-icon name="arrow" /></button></section>
-        <section v-if="tab === 'products' || tab === 'stock'" class="content-panel">
-          <div class="panel-toolbar"><h2>{{ tab === 'products' ? '商品列表' : '库存清单' }}<span>{{ filteredProducts.length }}</span></h2><div class="lookup-tools"><button class="button button-secondary scan-lookup" :disabled="scanning || !!storageError || transferBusy" :aria-busy="scanning" aria-label="扫码查找商品" @click="startScan()"><van-icon name="scan" />{{ scanning ? '扫码中…' : '扫码' }}</button><div v-if="products.length" class="search-field"><van-icon name="search" /><input v-model="search" type="search" aria-label="搜索商品名称、编号、条码或分类" placeholder="搜索商品、编号或条码" /><button v-if="search" class="search-clear" aria-label="清空搜索" @click="search = ''"><van-icon name="cross" /></button></div></div></div>
-          <details v-if="products.length" class="catalog-filter-drawer" :open="filtersOpen" @toggle="filtersOpen = $event.target.open"><summary><van-icon name="filter-o" />筛选<span>{{ categoryFilter === 'all' ? '全部分类' : categoryFilter === 'uncategorized' ? '未分类' : categoryFilter.slice(9) }}{{ lowStockOnly ? ' · 低库存' : '' }}</span><van-icon name="arrow-down" /></summary><div class="catalog-filters"><label>分类<select v-model="categoryFilter" aria-label="筛选商品分类"><option value="all">全部分类</option><option value="uncategorized">未分类</option><option v-for="category in categories" :key="category" :value="'category:' + category">{{ category }}</option></select></label><label class="low-stock-toggle"><input v-model="lowStockOnly" type="checkbox" />只看低库存</label><button v-if="search || categoryFilter !== 'all' || lowStockOnly" class="text-button" @click="resetFilters">重置筛选</button></div></details>
+        <section v-if="page !== 'history' && products.length" class="inventory-strip" aria-label="库存概览"><div><span>商品</span><strong>{{ products.length }}</strong><small>种</small></div><div><span>有库存</span><strong>{{ inStockCount }}</strong><small>种</small></div><button :class="{ warning: lowStockCount, active: pageStates[page].lowStockOnly }" :aria-pressed="pageStates[page].lowStockOnly" aria-label="切换低库存筛选" @click="pageStates[page].lowStockOnly = !pageStates[page].lowStockOnly"><span>低库存</span><strong>{{ lowStockCount }}</strong><small>种</small><van-icon name="arrow" /></button></section>
+        <section v-if="page === 'products' || page === 'stock'" class="content-panel">
+          <div class="panel-toolbar"><h2>{{ page === 'products' ? '商品列表' : '库存清单' }}<span>{{ pageProducts[page].length }}</span></h2><div class="lookup-tools"><button class="button button-secondary scan-lookup" :disabled="scanning || !!storageError || transferBusy" :aria-busy="scanning" aria-label="扫码查找商品" @click="startScan()"><van-icon name="scan" />{{ scanning ? '扫码中…' : '扫码' }}</button><div v-if="products.length" class="search-field"><van-icon name="search" /><input v-model="pageStates[page].search" type="search" aria-label="搜索商品名称、编号、条码或分类" placeholder="搜索商品、编号或条码" /><button v-if="pageStates[page].search" class="search-clear" aria-label="清空搜索" @click="pageStates[page].search = ''"><van-icon name="cross" /></button></div></div></div>
+          <details v-if="products.length" class="catalog-filter-drawer" :open="pageStates[page].filtersOpen" @toggle="pageStates[page].filtersOpen = $event.target.open"><summary><van-icon name="filter-o" />筛选<span>{{ pageStates[page].categoryFilter === 'all' ? '全部分类' : pageStates[page].categoryFilter === 'uncategorized' ? '未分类' : pageStates[page].categoryFilter.slice(9) }}{{ pageStates[page].lowStockOnly ? ' · 低库存' : '' }}</span><van-icon name="arrow-down" /></summary><div class="catalog-filters"><label>分类<select v-model="pageStates[page].categoryFilter" aria-label="筛选商品分类"><option value="all">全部分类</option><option value="uncategorized">未分类</option><option v-for="category in categories" :key="category" :value="'category:' + category">{{ category }}</option></select></label><label class="low-stock-toggle"><input v-model="pageStates[page].lowStockOnly" type="checkbox" />只看低库存</label><button v-if="pageStates[page].search || pageStates[page].categoryFilter !== 'all' || pageStates[page].lowStockOnly" class="text-button" @click="resetFilters(page)">重置筛选</button></div></details>
           <div v-if="!products.length" class="empty-state"><div class="empty-illustration"><svg viewBox="0 0 100 100" fill="none" aria-hidden="true"><rect x="17" y="33" width="66" height="49" rx="9" fill="#e8f2f3"/><path d="M19 36 50 20l31 16-31 17-31-17Z" fill="#d0e6e7"/><path d="M50 53v28M34 29l31 17" stroke="#7baeb0" stroke-width="2"/><rect x="60" y="64" width="25" height="25" rx="12.5" fill="#1d8a7a"/><path d="M72.5 70v13m-6.5-6.5h13" stroke="white" stroke-width="2" stroke-linecap="round"/></svg></div><h3>从第一件商品开始</h3><p>添加商品信息，再记录入库数量。<br />商品和库存变化会保存在这台设备上。</p><button class="button button-primary" :disabled="!!storageError || transferBusy" @click="openProduct()"><van-icon name="plus" />添加第一件商品</button></div>
-          <div v-else-if="!filteredProducts.length" class="empty-state compact"><van-icon name="search" class="empty-icon" /><h3>没有找到相关商品</h3><p>调整搜索、分类或低库存筛选试试。</p><button class="text-button" @click="resetFilters">重置筛选</button></div>
+          <div v-else-if="!pageProducts[page].length" class="empty-state compact"><van-icon name="search" class="empty-icon" /><h3>没有找到相关商品</h3><p>调整搜索、分类或低库存筛选试试。</p><button class="text-button" @click="resetFilters(page)">重置筛选</button></div>
           <div v-else class="product-list">
-            <div class="list-column-labels"><span>商品信息</span><span>当前库存</span><span>{{ tab === 'stock' ? '库存操作' : '' }}</span></div>
-            <article v-for="product in filteredProducts" :key="product.id" class="product-row">
+            <div class="list-column-labels"><span>商品信息</span><span>当前库存</span><span>{{ page === 'stock' ? '库存操作' : '' }}</span></div>
+            <article v-for="product in pageProducts[page]" :key="product.id" class="product-row">
               <button class="product-identity" @click="openDetail(product)" :aria-label="`查看商品 ${product.name}`"><span class="product-avatar">{{ product.name.slice(0, 1) }}</span><span class="product-text"><strong>{{ product.name }}</strong><small v-if="product.specification || product.sku">{{ product.specification || `编号 ${product.sku}` }}</small><small v-else>{{ productTypeLabel(product) }} · {{ product.unit }}</small><small v-if="product.category" class="category-label">{{ product.category }}</small></span></button>
               <div class="stock-number" :class="{ 'zero-stock': product.stock === 0 }"><strong>{{ product.stock.toLocaleString('zh-CN') }}</strong><span>{{ product.unit }}</span><small v-if="isLowStock(product)" class="low-stock-badge">低库存</small><small v-else-if="product.stock === 0">暂无库存</small></div>
-              <div v-if="tab === 'stock'" class="row-actions"><button class="small-button stock-out" :disabled="!!storageError || transferBusy || product.stock === 0" @click="openMovement('out', product)" :aria-label="`${product.name} 出库`">出库</button><button class="small-button stock-in" :disabled="!!storageError || transferBusy" @click="openMovement('in', product)" :aria-label="`${product.name} 入库`">入库</button></div>
+              <div v-if="page === 'stock'" class="row-actions"><button class="small-button stock-out" :disabled="!!storageError || transferBusy || product.stock === 0" @click="openMovement('out', product)" :aria-label="`${product.name} 出库`">出库</button><button class="small-button stock-in" :disabled="!!storageError || transferBusy" @click="openMovement('in', product)" :aria-label="`${product.name} 入库`">入库</button></div>
               <button v-else class="row-detail" @click="openDetail(product)" :aria-label="`${product.name} 商品详情`"><span>查看详情</span><van-icon name="arrow" /></button>
             </article>
           </div>
         </section>
 
-        <section v-if="tab === 'history'" class="content-panel history-panel">
+        <section v-if="page === 'history'" class="content-panel history-panel">
           <div class="panel-toolbar"><h2>历史记录<span>{{ movements.length }}</span></h2><div class="filter-group" aria-label="筛选出入库类型"><button v-for="item in [{ id: 'all', name: '全部' }, { id: 'in', name: '入库' }, { id: 'out', name: '出库' }]" :key="item.id" :class="{ active: historyFilter === item.id }" @click="historyFilter = item.id" :aria-pressed="historyFilter === item.id">{{ item.name }}</button></div></div>
           <div v-if="!filteredMovements.length" class="empty-state"><div class="empty-icon-wrap"><van-icon name="clock-o" /></div><h3>{{ movements.length ? '暂无此类记录' : '还没有出入库记录' }}</h3><p>{{ movements.length ? '切换筛选，查看其他库存变化。' : '完成一次入库或出库后，记录会显示在这里。' }}</p><button v-if="!movements.length" class="button button-secondary" @click="navigateTo('stock')">前往库存</button></div>
           <div v-else class="history-list"><article v-for="movement in filteredMovements" :key="movement.id" class="history-row"><span class="movement-icon" :class="movement.type"><van-icon :name="movement.type === 'in' ? 'down' : 'up'" /></span><div class="movement-content"><div class="movement-title"><strong>{{ movement.productName }}</strong><span class="movement-tag" :class="movement.type">{{ movement.type === 'in' ? '入库' : '出库' }}</span></div><p class="movement-meta">{{ formatDate(movement.createdAt, true) }}<span v-if="movement.productSku"> · {{ movement.productSku }}</span></p><p v-if="movement.note" class="movement-note">{{ movement.note }}</p><p class="stock-change">库存 {{ movement.beforeStock }} → {{ movement.afterStock }} {{ movement.unit }}</p><p v-if="movement.codes?.length" class="movement-meta">本次包装文字一致 {{ (movement.packagingChecks || []).filter(check => check.status === 'matched').length }} / {{ movement.codes.length }} 件<span v-if="(movement.packagingChecks || []).filter(check => check.status === 'matched').length < movement.codes.length">，其余未完全核实</span></p><details v-if="movement.packagingChecks?.length" class="history-codes"><summary>查看本次包装校验</summary><div v-for="check in movement.packagingChecks" :key="check.unitCode"><p>{{ check.unitCode }} · {{ packagingStatusLabels[check.status] }}</p><p>参考：{{ check.expected.name }} / {{ check.expected.specification }} / {{ check.expected.manufacturer }}</p><p v-for="capture in check.captures" :key="capture.id">{{ capture.text }}</p></div></details><details v-if="movement.codes?.length" class="history-codes"><summary>查看 {{ movement.codes.length }} 个单件码</summary><p v-for="code in movement.codes" :key="code">{{ code }}</p></details></div><div class="movement-quantity" :class="movement.type"><strong>{{ movement.type === 'in' ? '+' : '−' }}{{ movement.quantity.toLocaleString('zh-CN') }}</strong><span>{{ movement.unit }}</span></div></article></div>
         </section>
 
         <footer class="data-footer"><van-icon name="shield-o" /><p>本机保存 · 随时可备份</p></footer>
-        <div class="screen-reader-only" role="status" aria-live="polite">{{ status }}</div>
-      </main></Transition></div>
+      </main></template></HomePager>
+      <div class="screen-reader-only" role="status" aria-live="polite">{{ status }}</div>
     </div>
 
 
     <van-popup v-model:show="backupSheet" position="bottom" round closeable :close-on-click-overlay="!transferBusy" :closeable="!transferBusy" class="sheet-popup backup-popup" aria-label="数据备份"><header class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><h2>数据备份</h2><p>把商品、库存和完整记录保存到文件。</p></header><div class="backup-body"><section class="transfer-bar" aria-label="数据导入导出"><div><strong>数据导入 / 导出</strong><span>JSON 文件 · 商品与完整流水</span></div><div class="transfer-actions"><button class="button button-secondary" :disabled="!!storageError || scanning || transferBusy" @click="exportData">导出 JSON</button><button class="button button-secondary" :disabled="!!storageError || scanning || transferBusy" @click="prepareImport">导入 JSON</button></div><p v-if="transferBusy" role="status">{{ importSheet ? '请确认或取消导入' : '正在处理文件…' }}</p></section><p class="backup-notice"><van-icon name="info-o" />数据只保存在这台设备。卸载或清除应用数据前，请先导出备份；导入文件会替换当前数据，确认前可以预览。</p></div></van-popup>
-    <nav class="bottom-nav" :style="{'--selected-tab': ['products','stock','history'].indexOf(tab)}" aria-label="底部导航"><button v-for="item in [{ id: 'products', label: '商品', icon: 'apps-o' }, { id: 'stock', label: '库存', icon: 'orders-o' }, { id: 'history', label: '记录', icon: 'clock-o' }]" :key="item.id" :class="{ active: tab === item.id }" @click="navigateTo(item.id)" :aria-current="tab === item.id ? 'page' : undefined"><van-icon :name="item.icon" /><span>{{ item.label }}</span></button></nav>
+    <nav class="bottom-nav" :style="{'--page-progress': pagerMotion.progress, '--motion-duration': pagerMotion.duration + 'ms'}" aria-label="底部导航"><span class="nav-indicator" aria-hidden="true"></span><button v-for="item in [{ id: 'products', label: '商品', icon: 'apps-o' }, { id: 'stock', label: '库存', icon: 'orders-o' }, { id: 'history', label: '记录', icon: 'clock-o' }]" :key="item.id" :class="{ active: tab === item.id }" @click="navigateTo(item.id)" :aria-current="tab === item.id ? 'page' : undefined"><van-icon :name="item.icon" /><span>{{ item.label }}</span></button></nav>
 
     <van-popup v-model:show="productSheet" position="bottom" round :closeable="!productOcrBusy && !scanning" class="sheet-popup" :close-on-click-overlay="false" aria-label="商品信息表单">
-      <div class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><span class="sheet-kicker">PRODUCT DETAILS</span><h2>{{ editingId ? '编辑商品' : '新增商品' }}</h2><p>{{ editingId ? '更新商品资料，库存数量保持不变。' : '先建立商品档案，初始库存为 0。' }}</p></div>
+      <div class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><h2>{{ editingId ? '编辑商品' : '新增商品' }}</h2><p>{{ editingId ? '更新商品资料，库存数量保持不变。' : '先建立商品档案，初始库存为 0。' }}</p></div>
       <form class="sheet-form" @submit.prevent="saveProduct"><section class="product-photo-card" aria-label="包装信息自动填写"><h3>拍包装，自动填写商品信息</h3><p>拍清药名、规格和厂家，可翻面补拍。有标签的文字自动填写；推测候选请点选，无需重新打字。</p><button type="button" class="button button-primary" @click="captureProductFace" :disabled="productOcrBusy || scanning || productOcrCaptures.length >= 6" :aria-busy="productOcrBusy"><van-icon name="photograph" />{{ productOcrBusy ? '正在识别…' : productOcrCaptures.length ? '翻面补拍信息' : '拍摄包装' }}</button><OcrFieldPicker v-if="productOcrCaptures.length" :fields="productOcrFields" :captures="productOcrCaptures" :selected="productForm" :disabled="productOcrBusy" @select="useOcrCandidate" /><button v-if="productOcrCaptures.length" type="button" class="text-button" :disabled="productOcrBusy" @click="resetProductOcr">清除识别原文后重拍</button></section><fieldset class="movement-fields" :disabled="productOcrBusy || scanning">
-        <label class="form-field"><span>商品名称 <em>*</em></span><input v-model="productForm.name" name="product-name" placeholder="例如：纯棉短袖 T 恤" maxlength="80" autocomplete="off" required /><small>{{ productForm.name.length }}/80</small></label>
+        <label class="form-field"><span>商品名称 <em>*</em></span><input v-model="productForm.name" name="product-name" placeholder="例如：一次性检查手套" maxlength="80" autocomplete="off" required /><small>{{ productForm.name.length }}/80</small></label>
         <div class="form-grid"><label class="form-field"><span>商品编号</span><input v-model="productForm.sku" name="product-sku" placeholder="选填，例如 SKU001" maxlength="40" autocomplete="off" /></label><label class="form-field"><span>计量单位 <em>*</em></span><input v-model="productForm.unit" name="product-unit" placeholder="例如：件" maxlength="12" required /></label></div>
         <div class="form-field"><label for="product-barcode" class="barcode-label">商品条码</label><div class="barcode-input"><input id="product-barcode" v-model="productForm.barcode" name="product-barcode" type="text" placeholder="选填，扫描或手动输入" maxlength="80" autocomplete="off" :disabled="scanning" /><button type="button" class="button button-secondary" :disabled="scanning || !!storageError || transferBusy" :aria-busy="scanning" aria-label="扫码填写商品条码" @click="startScan('form')"><van-icon name="scan" />{{ scanning ? '扫码中' : '扫码' }}</button></div><small class="barcode-help">条码与商品编号分别保存，支持前导 0。{{ productForm.barcode.length }}/80</small></div>
         <label class="form-field"><span>包装规格（自动提取，可校正）</span><input v-model="productForm.specification" name="product-specification" maxlength="120" placeholder="例如 0.25g×24粒" /><small class="barcode-help">按包装完整填写；数字、单位不同应视为冲突。</small></label>
@@ -628,14 +589,19 @@ function confirmImport() {
       </form>
     </van-popup>
 
-    <van-popup v-model:show="importSheet" position="bottom" round closeable class="sheet-popup" aria-label="确认导入库存数据" @closed="cancelImport"><div class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><span class="sheet-kicker">IMPORT JSON</span><h2>确认覆盖当前数据</h2><p>导入会替换本机全部商品和出入库记录，不会与当前数据合并。请先导出当前数据留存。</p></div><div v-if="importPreview" class="detail-body"><div class="import-counts"><div><span>将导入</span><strong>{{ importPreview.products.length }} 种商品 · {{ importPreview.movements.length }} 笔记录 · {{ importPreview.units?.length || 0 }} 个单件档案</strong></div><div><span>当前本机</span><strong>{{ products.length }} 种商品 · {{ movements.length }} 笔记录</strong></div></div><p class="import-warning">确认后当前数据将被完整替换；取消不会更改任何记录。</p><div class="form-actions"><button class="button button-secondary" @click="cancelImport">取消导入</button><button class="button button-danger" :disabled="!!storageError" @click="confirmImport">确认覆盖并导入</button></div></div></van-popup>
+    <van-popup v-model:show="importSheet" position="bottom" round closeable class="sheet-popup" aria-label="确认导入库存数据" @closed="cancelImport"><div class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><h2>确认覆盖当前数据</h2><p>导入会替换本机全部商品和出入库记录，不会与当前数据合并。请先导出当前数据留存。</p></div><div v-if="importPreview" class="detail-body"><div class="import-counts"><div><span>将导入</span><strong>{{ importPreview.products.length }} 种商品 · {{ importPreview.movements.length }} 笔记录 · {{ importPreview.units?.length || 0 }} 个单件档案</strong></div><div><span>当前本机</span><strong>{{ products.length }} 种商品 · {{ movements.length }} 笔记录</strong></div></div><p class="import-warning">确认后当前数据将被完整替换；取消不会更改任何记录。</p><div class="form-actions"><button class="button button-secondary" @click="cancelImport">取消导入</button><button class="button button-danger" :disabled="!!storageError" @click="confirmImport">确认覆盖并导入</button></div></div></van-popup>
     <van-popup v-model:show="unknownSheet" position="bottom" round closeable class="sheet-popup" aria-label="未找到条码对应商品">
-      <div class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><span class="sheet-kicker">BARCODE LOOKUP</span><h2>尚未登记这个条码</h2><p>本机商品中没有对应条码。你可以建立商品档案，库存不会自动变化。已有商品请取消后打开商品详情，在编辑中绑定条码。</p></div>
+      <div class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><h2>尚未登记这个条码</h2><p>本机商品中没有对应条码。你可以建立商品档案，库存不会自动变化。已有商品请取消后打开商品详情，在编辑中绑定条码。</p></div>
       <div class="detail-body"><div class="unknown-barcode"><span>扫描结果</span><strong>{{ unknownBarcode }}</strong></div><div class="form-actions"><button type="button" class="button button-secondary" @click="unknownSheet = false">取消</button><button type="button" class="button button-primary" :disabled="!!storageError || transferBusy" @click="addScannedProduct">新增商品并填入条码</button></div></div>
     </van-popup>
 
     <van-popup v-model:show="detailSheet" position="bottom" round closeable class="sheet-popup detail-popup" aria-label="商品详情">
-      <template v-if="detailProduct"><div class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><span class="sheet-kicker">PRODUCT DETAILS</span><h2>商品详情</h2></div><div class="detail-body"><div class="detail-product"><span class="product-avatar large">{{ detailProduct.name.slice(0, 1) }}</span><div><h3>{{ detailProduct.name }}</h3><p>{{ detailProduct.sku ? `编号 ${detailProduct.sku}` : '未设置商品编号' }}</p></div></div><div class="detail-stock"><span>当前库存</span><strong>{{ detailProduct.stock.toLocaleString('zh-CN') }}<small>{{ detailProduct.unit }}</small></strong><div class="detail-stock-actions"><button class="button button-secondary" :disabled="!!storageError || transferBusy || detailProduct.stock === 0" @click="openMovement('out', detailProduct)">出库</button><button class="button button-primary" :disabled="!!storageError || transferBusy" @click="openMovement('in', detailProduct)">入库</button></div></div><dl class="detail-meta"><div><dt>包装规格</dt><dd>{{ detailProduct.specification || '未配置 OCR 参考' }}</dd></div><div><dt>生产厂家</dt><dd>{{ detailProduct.manufacturer || '未配置 OCR 参考' }}</dd></div><div><dt>商品类型</dt><dd>{{ productTypeLabel(detailProduct) }} · {{ detailProduct.trackingMode === 'unique' ? '每件唯一身份' : '仅管理数量' }}</dd></div><div><dt>分类</dt><dd>{{ detailProduct.category || '未分类' }}</dd></div><div><dt>低库存阈值</dt><dd>{{ detailProduct.lowStockThreshold == null ? '提醒关闭' : detailProduct.lowStockThreshold + ' ' + detailProduct.unit }}<span v-if="isLowStock(detailProduct)" class="low-stock-badge"> · 当前低库存</span></dd></div><div><dt>商品条码</dt><dd class="barcode-value">{{ detailProduct.barcode || '未设置条码' }}</dd></div><div><dt>备注</dt><dd>{{ detailProduct.note || '暂无备注' }}</dd></div><div><dt>创建时间</dt><dd>{{ formatDate(detailProduct.createdAt, true) }}</dd></div><div><dt>更新时间</dt><dd>{{ formatDate(detailProduct.updatedAt, true) }}</dd></div></dl><section v-if="detailProduct.trackingMode === 'unique'" class="unit-ledger"><h3>单件档案</h3><p>在库 {{ detailUnits.filter(unit => unit.status === 'in').length }} 件 · 已出库 {{ detailUnits.filter(unit => unit.status === 'out').length }} 件</p><div v-for="unit in detailUnits" :key="unit.code"><code>{{ unit.code }}</code><span :class="unit.status">{{ unit.status === 'in' ? '在库' : '已出库' }}</span><details v-if="unit.packagingCheck" class="unit-packaging"><summary>上次包装校验：{{ packagingStatusLabels[unit.packagingCheck.status] }}</summary><p>{{ formatDate(unit.packagingCheck.checkedAt, true) }} · 按当时参考信息校验</p><div v-for="(field, key) in unit.packagingCheck.fields" :key="key">{{ fieldLabels[key] }}：{{ fieldStatusLabels[field.status] }}</div><p v-for="capture in unit.packagingCheck.captures" :key="capture.id">{{ capture.text }}</p></details><small v-else class="unit-packaging">包装文字未核实</small></div><p v-if="!detailUnits.length">尚未登记单件码。</p></section><div class="detail-bottom-actions"><button class="button button-secondary" :disabled="!!storageError || transferBusy" @click="editDetail"><van-icon name="edit" />编辑商品</button><button class="button button-danger" :disabled="!!storageError || transferBusy || detailProduct.stock > 0 || detailUnits.length > 0" @click="removeProduct"><van-icon name="delete-o" />删除商品</button></div><p v-if="detailProduct.stock > 0 || detailUnits.length" class="delete-help">有库存或已建立单件档案的商品不能删除。</p></div></template>
+      <template v-if="detailProduct"><div class="sheet-header"><button type="button" class="sheet-back" aria-label="返回上一级" @click="handleBack"><van-icon name="arrow-left" /></button><h2>商品详情</h2></div><div class="detail-body"><div class="detail-product"><span class="product-avatar large">{{ detailProduct.name.slice(0, 1) }}</span><div><h3>{{ detailProduct.name }}</h3><p>{{ detailProduct.sku ? `编号 ${detailProduct.sku}` : '未设置商品编号' }}</p></div></div><div class="detail-stock"><span>当前库存</span><strong>{{ detailProduct.stock.toLocaleString('zh-CN') }}<small>{{ detailProduct.unit }}</small></strong><div class="detail-stock-actions"><button class="button button-secondary" :disabled="!!storageError || transferBusy || detailProduct.stock === 0" @click="openMovement('out', detailProduct)">出库</button><button class="button button-primary" :disabled="!!storageError || transferBusy" @click="openMovement('in', detailProduct)">入库</button></div></div><dl class="detail-meta"><div><dt>包装规格</dt><dd>{{ detailProduct.specification || '未配置 OCR 参考' }}</dd></div><div><dt>生产厂家</dt><dd>{{ detailProduct.manufacturer || '未配置 OCR 参考' }}</dd></div><div><dt>商品类型</dt><dd>{{ productTypeLabel(detailProduct) }} · {{ detailProduct.trackingMode === 'unique' ? '每件唯一身份' : '仅管理数量' }}</dd></div><div><dt>分类</dt><dd>{{ detailProduct.category || '未分类' }}</dd></div><div><dt>低库存阈值</dt><dd>{{ detailProduct.lowStockThreshold == null ? '提醒关闭' : detailProduct.lowStockThreshold + ' ' + detailProduct.unit }}<span v-if="isLowStock(detailProduct)" class="low-stock-badge"> · 当前低库存</span></dd></div><div><dt>商品条码</dt><dd class="barcode-value">{{ detailProduct.barcode || '未设置条码' }}</dd></div><div><dt>备注</dt><dd>{{ detailProduct.note || '暂无备注' }}</dd></div><div><dt>创建时间</dt><dd>{{ formatDate(detailProduct.createdAt, true) }}</dd></div><div><dt>更新时间</dt><dd>{{ formatDate(detailProduct.updatedAt, true) }}</dd></div></dl><section v-if="detailProduct.trackingMode === 'unique'" class="unit-ledger"><h3>单件档案</h3><p>在库 {{ detailUnits.filter(unit => unit.status === 'in').length }} 件 · 已出库 {{ detailUnits.filter(unit => unit.status === 'out').length }} 件</p><div v-for="unit in detailUnits" :key="unit.code"><code>{{ unit.code }}</code><span :class="unit.status">{{ unit.status === 'in' ? '在库' : '已出库' }}</span><details v-if="unit.packagingCheck" class="unit-packaging"><summary>上次包装校验：{{ packagingStatusLabels[unit.packagingCheck.status] }}</summary><p>{{ formatDate(unit.packagingCheck.checkedAt, true) }} · 按当时参考信息校验</p><div v-for="(field, key) in unit.packagingCheck.fields" :key="key">{{ fieldLabels[key] }}：{{ fieldStatusLabels[field.status] }}</div><p v-for="capture in unit.packagingCheck.captures" :key="capture.id">{{ capture.text }}</p></details><small v-else class="unit-packaging">包装文字未核实</small></div><p v-if="!detailUnits.length">尚未登记单件码。</p></section><div class="detail-bottom-actions"><button class="button button-secondary" :disabled="!!storageError || transferBusy" @click="editDetail"><van-icon name="edit" />编辑商品</button><button class="button button-danger" :disabled="!!storageError || transferBusy || detailProduct.stock > 0 || detailUnits.length > 0" @click="removeProduct"><van-icon name="delete-o" />删除商品</button></div><p v-if="detailProduct.stock > 0 || detailUnits.length" class="delete-help">有库存或已建立单件档案的商品不能删除。</p></div></template>
     </van-popup>
   </div>
 </template>
+
+<style scoped>
+.nav-indicator{transform:translateX(calc(var(--page-progress,0)*100%));transition:transform var(--motion-duration,220ms) cubic-bezier(.2,.8,.2,1)}
+@media(prefers-reduced-motion:reduce){.nav-indicator{transition:none!important}}
+</style>

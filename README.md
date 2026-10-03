@@ -4,9 +4,17 @@
 
 ## 手机安装包
 
-[下载 Android APK](https://github.com/beacon-of-science/inventory-app/releases/download/v0.5.4/inventory-app-debug.apk) · [Releases 发布页](https://github.com/beacon-of-science/inventory-app/releases/tag/v0.5.4)
+[下载 Android APK](https://github.com/beacon-of-science/inventory-app/releases/download/v0.6.0/inventory-app-debug.apk) · [Releases 发布页](https://github.com/beacon-of-science/inventory-app/releases/tag/v0.6.0)
 
 这是 Debug 测试版，支持 Android 7.0 及以上。手机安装与使用不需要安装 Node.js；下面的 Node.js 步骤仅用于修改源码和重新打包。
+
+## v0.6.0 界面与动画统一
+
+采用轻量的绿色本地台账风格，统一文字、间距、圆角、按钮与表单。商品、库存、记录使用同一套布局；简化装饰和重复文案，长名称与规格自动换行，主操作保持清楚。OCR 候选分字段显示，点选后仍需核对包装，原文与冲突保护保留。
+
+主页改为三个固定页面组成的连续轨道：拖动时可看到相邻页面，松手后连贯滑入，取消则回弹。商品与库存分别保存搜索、筛选和滚动位置；快速点击导航会前往最后选择的页面。底栏选中背景与页面同步，按钮采用轻微明暗和按压反馈。切页约 220ms，回弹约 180ms；系统减少动态效果偏好仍生效。输入框、操作按钮、弹层、多指和屏幕两侧 24px 系统手势区受到保护，商品名称区域可起滑且阻止滑动后误打开详情。
+
+由 GPT-6 Astra 负责设计方向，GPT-6.1 Sol 分别实现视觉与动效，另由 GPT-6 Astra 独立验收。本轮不变更库存与 OCR 核心规则，也未进入 M5。测试、浏览器验收和 Android 构建结果不代表真机帧率或相机识别准确率；覆盖安装后请在手机复测轻滑、连续切页、列表滚动、返回与拍照入库。
 
 ## v0.5.4 轻滑与 OCR 候选预处理
 
